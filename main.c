@@ -1,3 +1,4 @@
+#include <immintrin.h>
 #include <math.h>
 #include <stdatomic.h>
 #include <stddef.h>
@@ -15,25 +16,25 @@
 
 #define COLOR_COUNT 19
 Color colors[] = {
-YELLOW,
-GOLD,
-ORANGE,
-PINK,
-RED,
-MAROON,
-GREEN,
-LIME,
-DARKGREEN,
-SKYBLUE,
-BLUE,
-DARKBLUE,
-PURPLE,
-VIOLET,
-DARKPURPLE,
-BEIGE,
-BROWN,
-DARKBROWN,
-MAGENTA,
+ YELLOW,
+ GOLD,
+ ORANGE,
+ PINK,
+ RED,
+ MAROON,
+ GREEN,
+ LIME,
+ DARKGREEN,
+ SKYBLUE,
+ BLUE,
+ DARKBLUE,
+ PURPLE,
+ VIOLET,
+ DARKPURPLE,
+ BEIGE,
+ BROWN,
+ DARKBROWN,
+ MAGENTA,
 };
 
 typedef struct {
@@ -120,8 +121,6 @@ void lane_range(size_t start, size_t end, size_t * out_thread_start, size_t * ou
 typedef struct {
     Vector2 pos;
     Vector2 vel;
-    size_t  part;
-    Color   color;
 } Boid ; 
 
 #define WORLD_WIDTH  1600
@@ -144,69 +143,110 @@ typedef struct {
 #define MAX_BOID_COUNT  20000
 
 typedef struct {
-    int head[GRID_CELLS];
-    int next[MAX_BOID_COUNT];
-} Grid;
+    int offset[GRID_CELLS + 1]; // adding sentinal value in the end of it 
+    int indices[MAX_BOID_COUNT];
+} GridSOA;
+
+//typedef struct {
+//    int head[GRID_CELLS];
+//    int next[MAX_BOID_COUNT];
+//} Grid;
 
 typedef struct {
-    Boid boids[MAX_BOID_COUNT];
-    size_t boid_count;
-    Grid grid;
-    float delta_time;
-} App ;
+    float x[MAX_BOID_COUNT];
+    float y[MAX_BOID_COUNT];
+    float vx[MAX_BOID_COUNT];
+    float vy[MAX_BOID_COUNT];
+} BoidSOA;
 
-#define APP() ((App *)ctx.group->app)
+typedef struct {
+    BoidSOA boid_soa[2];
+    int front;
+    size_t boid_count;
+    GridSOA grid_soa;
+//    Grid grid;
+    float delta_time;
+} App;
+
+#define APP()              ((App *)ctx.group->app)
+#define BOID_SOA()         ((APP())->boid_soa[(APP())->front])
+#define NEXT_BOID_SOA()    ((APP())->boid_soa[((APP())->front + 1) % 2])
+#define FLIP()             (APP())->front = (((APP())->front + 1) % 2)
 
 void init_window() {
-    InitWindow(1600, 900, "main window");
+    InitWindow(1600, 900, "para boid");
     SetTargetFPS(60);
 
     for (int i = 0 ; i < MAX_BOID_COUNT; i++){
-        Boid * boid = &APP()->boids[i];
 
-        boid->pos = (Vector2){
-            GetRandomValue(0, WORLD_WIDTH * 1000)  / 1000.0f,
-            GetRandomValue(0, WORLD_HEIGHT * 1000) / 1000.0f};
-        boid->vel = Vector2Normalize((Vector2){
-            GetRandomValue(-1000, 1000) / 1000.0f,
-            GetRandomValue(-1000, 1000) / 1000.0f
-        });
+        float x =GetRandomValue(0, WORLD_WIDTH * 1000)  / 1000.0f;
+        float y = GetRandomValue(0, WORLD_HEIGHT * 1000) / 1000.0f;
 
-        float cell_size = 100.0f;
-        int x = (int)(floorf(boid->pos.x / cell_size));
-        int y = (int)(floorf(boid->pos.y / cell_size));
+        float vx = GetRandomValue(-1000, 1000) / 1000.0f;
+        float vy = GetRandomValue(-1000, 1000) / 1000.0f;
+        
+        Vector2 vel = Vector2Normalize((Vector2){vx, vy});
 
-        int offset = y * (GetScreenWidth() / 100.0f)  + x;
-
-        boid->part = offset;
-
-        Color color = colors[boid->part % COLOR_COUNT];
-        color.a = 180.0f;
-        boid->color = color;
+        BOID_SOA().x[i] = x;
+        BOID_SOA().y[i] = y;
+        BOID_SOA().vx[i] = vel.x;
+        BOID_SOA().vy[i] = vel.y;
+        
     }
     APP()->boid_count = MAX_BOID_COUNT;
 }
 
 void render() {
     for (int i = 0 ; i < APP()->boid_count; i++){
-        const Boid * boid = &APP()->boids[i];
-        float angle = atan2(boid->vel.y, boid->vel.x);
-        DrawPoly(boid->pos, 3, 5, angle * RAD2DEG, (Color){255, 255, 255, 80});
+        float angle = atan2(BOID_SOA().vy[i], BOID_SOA().vx[i]);
+        DrawPoly(
+                (Vector2){BOID_SOA().x[i], BOID_SOA().y[i]}, 
+                3, 5, angle * RAD2DEG, 
+                (Color){255, 255, 255, 80});
     }
 }
 
-void build_grid(Grid * grid, App * app){
-    for (int c = 0 ; c < GRID_CELLS ; c++) grid->head[c] = -1;
-    for (size_t i = 0 ; i < app->boid_count; i++) {
-        int x = (int) floorf(app->boids[i].pos.x / CELL_SIZE);
-        int y = (int) floorf(app->boids[i].pos.y / CELL_SIZE);
+void build_grid_soa(GridSOA * grid_soa) {
+    int insert[GRID_CELLS] = {};
+
+    for(size_t i = 0 ; i < GRID_CELLS; i++) grid_soa->offset[i] = 0;
+
+    for(size_t i = 0 ; i < MAX_BOID_COUNT; i++) {
+        int x = (int) floorf(BOID_SOA().x[i] / CELL_SIZE);
+        int y = (int) floorf(BOID_SOA().y[i] / CELL_SIZE);
         int cell = y * GRID_W + x;
-        grid->next[i] = grid->head[cell];
-        grid->head[cell] = (int)i;
+        grid_soa->offset[cell] += 1;
+        insert[cell] += 1;
     }
+
+    int cummulative = 0;
+    for(size_t i = 0 ; i < GRID_CELLS ; i++){
+        int count = grid_soa->offset[i];
+        grid_soa->offset[i] = cummulative;
+        insert[i] = cummulative;
+        cummulative += count;
+    }
+    grid_soa->offset[GRID_CELLS] = cummulative;
+
+    for(size_t i = 0 ; i < MAX_BOID_COUNT; i++){
+        int x = (int) floorf(BOID_SOA().x[i] / CELL_SIZE);
+        int y = (int) floorf(BOID_SOA().y[i] / CELL_SIZE);
+        int cell = y * GRID_W + x;
+
+        int offset = insert[cell];
+        insert[cell] += 1;
+        grid_soa->indices[offset] = i;
+
+        NEXT_BOID_SOA().x[offset] = BOID_SOA().x[i];
+        NEXT_BOID_SOA().y[offset] = BOID_SOA().y[i];
+        NEXT_BOID_SOA().vx[offset] = BOID_SOA().vx[i];
+        NEXT_BOID_SOA().vy[offset] = BOID_SOA().vy[i];
+    }
+
+    FLIP();
 }
 
-void update(float delta_time, App * app, Grid * grid){
+void update(float delta_time, App * app){
     size_t thread_start = 0;
     size_t thread_end = 0;
 
@@ -218,10 +258,12 @@ void update(float delta_time, App * app, Grid * grid){
     size_t boid_count = thread_end - thread_start;
 
     for(size_t i = thread_start; i < thread_end ; i++){
-        Boid * self = &APP()->boids[i];
         
-        int x = (int) floorf(app->boids[i].pos.x / CELL_SIZE);
-        int y = (int) floorf(app->boids[i].pos.y / CELL_SIZE);
+        int x = (int) floorf(BOID_SOA().x[i] / CELL_SIZE);
+        int y = (int) floorf(BOID_SOA().y[i] / CELL_SIZE);
+
+        Vector2 self_pos = {BOID_SOA().x[i], BOID_SOA().y[i]};
+        Vector2 self_vel = {BOID_SOA().vx[i], BOID_SOA().vy[i]};
 
         Vector2 separation = {};
         Vector2 align_sum = {};
@@ -237,19 +279,23 @@ void update(float delta_time, App * app, Grid * grid){
                 if (nx < 0 || ny < 0 || nx >= GRID_W || ny >= GRID_H) continue;
                 int cell = ny * GRID_W + nx;
 
-                for (int j = grid->head[cell]; j != -1; j = grid->next[j]) {
-                    if ((size_t) j == i) continue;
-                    Boid * other = &APP()->boids[j];
-                    float dist = Vector2Distance(self->pos, other->pos);
-                    if (dist >= NEIGHBOUR_RADIUS) continue;
+                for (int j = APP()->grid_soa.offset[cell]; j < APP()->grid_soa.offset[cell + 1]; j++){
+                    if (j == i) continue;
 
-                    if (dist < SEPARATION_RADIUS && dist > 0.000001f) {
-                        Vector2 away = Vector2Scale(Vector2Subtract(self->pos, other->pos), 1.0f/dist);
+                    Vector2 other_pos = {BOID_SOA().x[j], BOID_SOA().y[j]};
+                    Vector2 other_vel = {BOID_SOA().vx[j], BOID_SOA().vy[j]};
+
+                    float dist_sq =  Vector2DistanceSqr(self_pos, other_pos);
+                    if (dist_sq >= NEIGHBOUR_RADIUS * NEIGHBOUR_RADIUS) continue;
+
+                    if (dist_sq < SEPARATION_RADIUS * SEPARATION_RADIUS && dist_sq > 0.000001f * 0.000001f) {
+                        float dist = sqrtf(dist_sq);
+                        Vector2 away = Vector2Scale(Vector2Subtract(self_pos, other_pos), 1.0f/dist);
                         separation = Vector2Add(separation, away);
                     }
 
-                    align_sum = Vector2Add(align_sum, other->vel);
-                    cohesion_sum = Vector2Add(cohesion_sum, other->pos);
+                    align_sum = Vector2Add(align_sum, other_vel);
+                    cohesion_sum = Vector2Add(cohesion_sum, other_pos);
                     neighbours++;
                 }
             }
@@ -259,10 +305,10 @@ void update(float delta_time, App * app, Grid * grid){
         if (neighbours > 0){
             Vector2 avg_vel = Vector2Scale(align_sum, 1.0f / neighbours);
             Vector2 center  = Vector2Scale(cohesion_sum, 1.0f / neighbours);
-            Vector2 toward_center = Vector2Subtract(center, self->pos);
+            Vector2 toward_center = Vector2Subtract(center, self_pos);
 
             accel = Vector2Add(accel, Vector2Scale(separation, SEPARATION_WEIGHT));
-            accel = Vector2Add(accel, Vector2Scale(Vector2Subtract(avg_vel, self->vel), ALIGNMENT_WEIGHT));
+            accel = Vector2Add(accel, Vector2Scale(Vector2Subtract(avg_vel, self_vel), ALIGNMENT_WEIGHT));
             accel = Vector2Add(accel, Vector2Scale(toward_center, COHESION_WEIGHT));
         }
 
@@ -273,9 +319,9 @@ void update(float delta_time, App * app, Grid * grid){
         };
         accel = Vector2Add(accel, noise);
 
-        Vector2 vel = Vector2Add(self->vel, Vector2Scale(accel, delta_time));
+        Vector2 vel = Vector2Add(self_vel, Vector2Scale(accel, delta_time));
         vel = Vector2ClampValue(vel, MIN_SPEED, MAX_SPEED);
-        Vector2 pos = Vector2Add(self->pos, Vector2Scale(vel, delta_time));
+        Vector2 pos = Vector2Add(self_pos, Vector2Scale(vel, delta_time));
 
         if (pos.x < 0.0f) {
             pos.x += WORLD_WIDTH;
@@ -289,17 +335,20 @@ void update(float delta_time, App * app, Grid * grid){
             pos.y -= WORLD_HEIGHT;
         }
 
-        self->pos = pos;
-        self->vel = vel;
+        self_pos  = pos;
+        self_vel  = vel;
 
-        boids[i - thread_start].pos = self->pos;
-        boids[i - thread_start].vel = self->vel;
+        boids[i - thread_start].pos = self_pos;
+        boids[i - thread_start].vel = self_vel;
     }
 
     LANE_BARRIER();
 
     for(size_t i = thread_start ; i < thread_end ; i++){
-        APP()->boids[i] = boids[i - thread_start];
+        BOID_SOA().x[i] = boids[i - thread_start].pos.x;
+        BOID_SOA().y[i] = boids[i - thread_start].pos.y;
+        BOID_SOA().vx[i] = boids[i - thread_start].vel.x;
+        BOID_SOA().vy[i] = boids[i - thread_start].vel.y;
     }
 }
 
@@ -328,13 +377,12 @@ int thread_main() {
 
             EndDrawing();
 
-
-            build_grid(&APP()->grid, APP());
+            build_grid_soa(&APP()->grid_soa);
         }
 
         LANE_BARRIER();
 
-        update(APP()->delta_time, APP(), &APP()->grid);
+        update(APP()->delta_time, APP());
 
     }
     return 0;
@@ -352,6 +400,7 @@ void * _thread_start(void * data) {
 int main(){
 
     App app = {};
+    app.front = 0;
 
     Reserve reserve = {};
     reserve_init(&reserve, GB(4));
