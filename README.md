@@ -15,6 +15,19 @@ SIMD is the next layer being explored on top of that: restructuring the boid/gri
 so the per-boid neighbor search can be vectorized, instead of just relying on
 thread-level parallelism alone.
 
+## Status
+
+The data layout work needed for SIMD is done: boid positions/velocities live in flat
+SoA arrays, the spatial grid is a contiguous CSR-style layout instead of a pointer-chased
+linked list, and the grid rebuild physically sorts the boid data into cell order (double
+buffered) so a cell's neighbors are a contiguous run in memory rather than a gather.
+
+Before writing the actual vectorized code, the frame is instrumented with a per-phase
+timer (render / grid build / update, each shown on screen in milliseconds) so any SIMD
+work can be measured against a real baseline instead of guessed at:
+
+![fps counters](fps-counters0.png)
+
 ## Layout
 
 - `main.c` — the boids simulation: update/render loop, flocking rules (separation,

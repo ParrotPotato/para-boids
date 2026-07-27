@@ -126,7 +126,7 @@ typedef struct {
 #define WORLD_WIDTH  1600
 #define WORLD_HEIGHT 900
 
-#define NEIGHBOUR_RADIUS  30.0f
+#define NEIGHBOUR_RADIUS  45.0f
 #define SEPARATION_RADIUS 15.0f
 #define SEPARATION_WEIGHT 14.0f
 #define ALIGNMENT_WEIGHT  8.0f
@@ -143,14 +143,9 @@ typedef struct {
 #define MAX_BOID_COUNT  20000
 
 typedef struct {
-    int offset[GRID_CELLS + 1]; // adding sentinal value in the end of it 
+    int offset[GRID_CELLS + 1];
     int indices[MAX_BOID_COUNT];
 } GridSOA;
-
-//typedef struct {
-//    int head[GRID_CELLS];
-//    int next[MAX_BOID_COUNT];
-//} Grid;
 
 typedef struct {
     float x[MAX_BOID_COUNT];
@@ -175,7 +170,7 @@ typedef struct {
 
 void init_window() {
     InitWindow(1600, 900, "para boid");
-    SetTargetFPS(60);
+    SetTargetFPS(144);
 
     for (int i = 0 ; i < MAX_BOID_COUNT; i++){
 
@@ -202,7 +197,7 @@ void render() {
         DrawPoly(
                 (Vector2){BOID_SOA().x[i], BOID_SOA().y[i]}, 
                 3, 5, angle * RAD2DEG, 
-                (Color){255, 255, 255, 80});
+                (Color){255, 255, 255, 255});
     }
 }
 
@@ -253,9 +248,6 @@ void update(float delta_time, App * app){
     lane_range(0, APP()->boid_count, &thread_start, &thread_end);
     
     arena_reset(THREAD_ARENA_PTR());
-
-    Boid * boids = ARENA_PUSH_TYPE_ARRAY(THREAD_ARENA_PTR(), Boid, thread_end - thread_start);
-    size_t boid_count = thread_end - thread_start;
 
     for(size_t i = thread_start; i < thread_end ; i++){
         
@@ -338,18 +330,15 @@ void update(float delta_time, App * app){
         self_pos  = pos;
         self_vel  = vel;
 
-        boids[i - thread_start].pos = self_pos;
-        boids[i - thread_start].vel = self_vel;
+        NEXT_BOID_SOA().x[i] = self_pos.x;
+        NEXT_BOID_SOA().y[i] = self_pos.y;
+        NEXT_BOID_SOA().vx[i] = self_vel.x;
+        NEXT_BOID_SOA().vy[i] = self_vel.y;
     }
 
     LANE_BARRIER();
 
-    for(size_t i = thread_start ; i < thread_end ; i++){
-        BOID_SOA().x[i] = boids[i - thread_start].pos.x;
-        BOID_SOA().y[i] = boids[i - thread_start].pos.y;
-        BOID_SOA().vx[i] = boids[i - thread_start].vel.x;
-        BOID_SOA().vy[i] = boids[i - thread_start].vel.y;
-    }
+    if (LANE_ID() == 0) { FLIP(); }
 }
 
 int thread_main() {
@@ -358,8 +347,14 @@ int thread_main() {
     if (LANE_ID() == 0) init_window();
     static atomic_int window_should_close = 0;
 
+    double update_time = 0;
+    double render_time = 0;
+    double build_time = 0;
+
     while(!atomic_load_explicit(&window_should_close, memory_order_acquire)){
+
         LANE_BARRIER();
+
         if (LANE_ID() == 0) {
             int result = WindowShouldClose() ? 1 : 0;
             atomic_store_explicit(&window_should_close, result, memory_order_relaxed);
@@ -369,20 +364,47 @@ int thread_main() {
             BeginDrawing();
             ClearBackground(BLACK);
 
-            render();
-
             char buffer[1024] = {};
+            double render_start_time = GetTime();
+            render();
+            double render_stop_time = GetTime();
+            render_time = render_stop_time - render_start_time;
+
+
+            double build_start_time = GetTime();
+            build_grid_soa(&APP()->grid_soa);
+            double build_stop_time = GetTime();
+            build_time = build_stop_time - build_start_time;
+
+            DrawRectangle(0, 0, 300, 500,  (Color){255, 255, 255, 180});
+
             snprintf(buffer, 1024, "FPS: %d", GetFPS());
-            DrawText(buffer, 10, 10, 10, RED);
+            DrawText(buffer, 10, 10, 20, BLUE);
+
+            snprintf(buffer, 1024,  "Render: %lf ms", render_time * 1000.0);
+            DrawText(buffer, 10, 35, 20, BLUE);
+            
+            snprintf(buffer, 1024,  "Build : %lf ms", build_time * 1000.0);
+            DrawText(buffer, 10, 60, 20, BLUE);
+
+            snprintf(buffer, 1024,  "Update : %lf ms", update_time * 1000.0);
+            DrawText(buffer, 10, 85, 20, BLUE);
 
             EndDrawing();
 
-            build_grid_soa(&APP()->grid_soa);
         }
 
         LANE_BARRIER();
 
+        double update_start_time = 0, update_stop_time = 0;
+        if (LANE_ID() == 0) {
+            update_start_time = GetTime();
+        }
         update(APP()->delta_time, APP());
+        if (LANE_ID() == 0) { 
+            update_stop_time = GetTime();
+            update_time = update_stop_time - update_start_time;
+        }
 
     }
     return 0;
