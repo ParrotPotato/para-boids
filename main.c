@@ -140,7 +140,7 @@ typedef struct {
 #define GRID_H ((int) (WORLD_HEIGHT / CELL_SIZE) + 1)
 #define GRID_CELLS (GRID_W * GRID_H)
 
-#define MAX_BOID_COUNT  50000
+#define MAX_BOID_COUNT  100000
 
 typedef struct {
     int _offset[GRID_CELLS + 1];
@@ -199,7 +199,7 @@ void init_window() {
 
 void render() {
     for (int i = 0 ; i < APP()->boid_count; i++){
-        DrawRectangle(BOID_SOA().x[i] - 1, BOID_SOA().y[i] - 1, 2, 2, WHITE);
+        DrawPixel(BOID_SOA().x[i], BOID_SOA().y[i],  WHITE);
     }
 }
 
