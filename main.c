@@ -237,12 +237,132 @@ void build_grid_soa(GridSOA * grid_soa) {
     FLIP();
 }
 
+typedef struct {
+    Vector2 separation, align_sum, cohesion_sum;
+    int neighbours;
+}NeighbourAcc;
+
+NeighbourAcc acculumate_neighbours(Vector2 self_pos, int self_idx, int start, int end) {
+    NeighbourAcc result = {};
+    for (int j = start; j < end; j++){
+        if (j == self_idx) continue;
+
+        Vector2 other_pos = {BOID_SOA().x[j], BOID_SOA().y[j]};
+        Vector2 other_vel = {BOID_SOA().vx[j], BOID_SOA().vy[j]};
+
+        float dist_sq =  Vector2DistanceSqr(self_pos, other_pos);
+        if (dist_sq >= NEIGHBOUR_RADIUS * NEIGHBOUR_RADIUS) continue;
+
+        if (dist_sq < SEPARATION_RADIUS * SEPARATION_RADIUS && dist_sq > 0.000001f * 0.000001f) {
+            float dist = sqrtf(dist_sq);
+            Vector2 away = Vector2Scale(Vector2Subtract(self_pos, other_pos), 1.0f/dist);
+            result.separation = Vector2Add(result.separation, away);
+        }
+
+        result.align_sum = Vector2Add(result.align_sum, other_vel);
+        result.cohesion_sum = Vector2Add(result.cohesion_sum, other_pos);
+        result.neighbours++;
+    }
+    return result;
+}
+
+static inline float hsum256_ps(__m256 v) {
+    // v = [0, 1, 2, 3, 4, 5, 6, 7]
+    __m128 lo = _mm256_castps256_ps128(v); // [0, 1, 2, 3]
+    __m128 hi = _mm256_extractf128_ps(v, 1); // [4, 5, 6, 7]
+
+    lo = _mm_add_ps(lo, hi); // [0 + 4, 1 + 5, 2 + 6, 3 + 7]
+
+    lo = _mm_hadd_ps(lo, lo); // [0 + 4 + 1 + 5, 2 + 6 + 3 + 7, 0 + 4 + 1 + 5, 2 + 6 + 3 + 7]
+    lo = _mm_hadd_ps(lo, lo); // [0 + 4 + 1 + 5+ 2 + 6 + 3 + 7, ... ]
+    return _mm_cvtss_f32(lo); // return the first value 
+}
+
+NeighbourAcc simd_acculumate_neighbours(Vector2 self_pos, int self_idx, int start, int end) {
+    NeighbourAcc result = {};
+
+    __m256 self_x = _mm256_set1_ps(self_pos.x);
+    __m256 self_y = _mm256_set1_ps(self_pos.y);
+    __m256 self_idx8 = _mm256_set1_ps((float) self_idx);
+
+    __m256 lane_offsets = _mm256_setr_ps(0, 1, 2, 3, 4, 5, 6, 7);
+
+    __m256 sep_x = _mm256_setzero_ps(), sep_y = _mm256_setzero_ps();
+    __m256 align_x = _mm256_setzero_ps(), align_y = _mm256_setzero_ps();
+    __m256 coh_x = _mm256_setzero_ps(), coh_y = _mm256_setzero_ps();
+    __m256 count = _mm256_setzero_ps();
+
+    int j = start;
+
+    for(; j + 8 <= end ; j+=8){
+        __m256 ox = _mm256_loadu_ps(&BOID_SOA().x[j]);
+        __m256 oy = _mm256_loadu_ps(&BOID_SOA().y[j]);
+        __m256 ovx = _mm256_loadu_ps(&BOID_SOA().vx[j]);
+        __m256 ovy = _mm256_loadu_ps(&BOID_SOA().vy[j]);
+
+        __m256 j_idx = _mm256_add_ps(_mm256_set1_ps((float) j), lane_offsets);
+        __m256 not_self = _mm256_cmp_ps(j_idx, self_idx8, _CMP_NEQ_OQ);
+
+        __m256 dx = _mm256_sub_ps(ox, self_x);
+        __m256 dy = _mm256_sub_ps(oy, self_y);
+        __m256 dist_sq = _mm256_add_ps(_mm256_mul_ps(dx, dx), _mm256_mul_ps(dy, dy));
+        __m256 inv_dist  = _mm256_rsqrt_ps(dist_sq);
+
+        __m256 valid = _mm256_and_ps(
+                not_self, 
+                _mm256_cmp_ps(
+                    dist_sq, 
+                    _mm256_set1_ps(NEIGHBOUR_RADIUS*NEIGHBOUR_RADIUS), _CMP_LT_OQ));
+
+        __m256 sep_mask = _mm256_and_ps(
+                not_self, 
+                _mm256_and_ps(
+                    _mm256_cmp_ps(
+                        dist_sq, 
+                        _mm256_set1_ps(SEPARATION_RADIUS*SEPARATION_RADIUS), _CMP_LT_OQ),
+                    _mm256_cmp_ps(
+                        _mm256_set1_ps(0.000001f * 0.000001f),
+                        dist_sq, _CMP_LT_OQ)
+                    )
+                );
+
+        align_x = _mm256_add_ps(align_x, _mm256_and_ps(ovx, valid));
+        align_y = _mm256_add_ps(align_y, _mm256_and_ps(ovy, valid));
+        coh_x = _mm256_add_ps(coh_x, _mm256_and_ps(ox, valid));
+        coh_y = _mm256_add_ps(coh_y, _mm256_and_ps(oy, valid));
+
+        sep_x = _mm256_add_ps(sep_x, _mm256_and_ps(
+                    _mm256_mul_ps(dx, inv_dist), sep_mask));
+        sep_y = _mm256_add_ps(sep_y, _mm256_and_ps(
+                    _mm256_mul_ps(dy, inv_dist), sep_mask));
+
+        count = _mm256_add_ps(count, _mm256_and_ps(_mm256_set1_ps(1.0f), valid));
+    }
+    
+    NeighbourAcc tail_result = acculumate_neighbours(self_pos, self_idx, j, end);
+    
+    result.neighbours = hsum256_ps(count) + tail_result.neighbours;
+    result.separation = (Vector2){
+        .x = (-1.0f * hsum256_ps(sep_x)) + tail_result.separation.x, // since separation is self - other and dx and dy were other - self
+        .y = (-1.0f * hsum256_ps(sep_y)) + tail_result.separation.y,
+    };
+    result.cohesion_sum = (Vector2){
+        .x = hsum256_ps(coh_x) + tail_result.cohesion_sum.x,
+        .y = hsum256_ps(coh_y) + tail_result.cohesion_sum.y,
+    };
+    result.align_sum = (Vector2) {
+        .x = hsum256_ps(align_x) + tail_result.align_sum.x,
+        .y = hsum256_ps(align_y) + tail_result.align_sum.y,
+    };
+
+    return result;
+}
+
 void update(float delta_time, App * app){
     size_t thread_start = 0;
     size_t thread_end = 0;
 
     lane_range(0, APP()->boid_count, &thread_start, &thread_end);
-    
     arena_reset(THREAD_ARENA_PTR());
 
     for(size_t i = thread_start; i < thread_end ; i++){
@@ -267,25 +387,16 @@ void update(float delta_time, App * app){
                 if (nx < 0 || ny < 0 || nx >= GRID_W || ny >= GRID_H) continue;
                 int cell = ny * GRID_W + nx;
 
-                for (int j = APP()->grid_soa.offset[cell]; j < APP()->grid_soa.offset[cell + 1]; j++){
-                    if (j == i) continue;
+                int start = APP()->grid_soa.offset[cell];
+                int end = APP()->grid_soa.offset[cell + 1];
 
-                    Vector2 other_pos = {BOID_SOA().x[j], BOID_SOA().y[j]};
-                    Vector2 other_vel = {BOID_SOA().vx[j], BOID_SOA().vy[j]};
-
-                    float dist_sq =  Vector2DistanceSqr(self_pos, other_pos);
-                    if (dist_sq >= NEIGHBOUR_RADIUS * NEIGHBOUR_RADIUS) continue;
-
-                    if (dist_sq < SEPARATION_RADIUS * SEPARATION_RADIUS && dist_sq > 0.000001f * 0.000001f) {
-                        float dist = sqrtf(dist_sq);
-                        Vector2 away = Vector2Scale(Vector2Subtract(self_pos, other_pos), 1.0f/dist);
-                        separation = Vector2Add(separation, away);
-                    }
-
-                    align_sum = Vector2Add(align_sum, other_vel);
-                    cohesion_sum = Vector2Add(cohesion_sum, other_pos);
-                    neighbours++;
-                }
+                NeighbourAcc this_cell= simd_acculumate_neighbours(self_pos, i, start, end);
+                // NeighbourAcc this_cell= acculumate_neighbours(self_pos, i, start, end);
+                
+                separation = Vector2Add(separation, this_cell.separation);
+                align_sum = Vector2Add(align_sum, this_cell.align_sum);
+                cohesion_sum = Vector2Add(cohesion_sum, this_cell.cohesion_sum);
+                neighbours += this_cell.neighbours;
             }
         }
 
@@ -301,11 +412,11 @@ void update(float delta_time, App * app){
         }
 
 #define NOISE_STRENGTH 0.3f
-        Vector2 noise = (Vector2) {
-            (GetRandomValue(-100, 100) / 100.0f * NOISE_STRENGTH),
-            (GetRandomValue(-100, 100) / 100.0f * NOISE_STRENGTH),
-        };
-        accel = Vector2Add(accel, noise);
+        //Vector2 noise = (Vector2) {
+        //    (GetRandomValue(-100, 100) / 100.0f * NOISE_STRENGTH),
+        //    (GetRandomValue(-100, 100) / 100.0f * NOISE_STRENGTH),
+        //};
+        //accel = Vector2Add(accel, noise);
 
         Vector2 vel = Vector2Add(self_vel, Vector2Scale(accel, delta_time));
         vel = Vector2ClampValue(vel, MIN_SPEED, MAX_SPEED);
