@@ -143,9 +143,15 @@ typedef struct {
 #define MAX_BOID_COUNT  50000
 
 typedef struct {
-    int offset[GRID_CELLS + 1];
+    int _offset[GRID_CELLS + 1];
     int indices[MAX_BOID_COUNT];
 } GridSOA;
+
+int offset(GridSOA * grid_soa, int x) {
+        if (x < 0) return grid_soa->_offset[0];
+        if (x > GRID_CELLS) return grid_soa->_offset[GRID_CELLS];
+        return grid_soa->_offset[x];
+}
 
 typedef struct {
     float x[MAX_BOID_COUNT];
@@ -200,24 +206,24 @@ void render() {
 void build_grid_soa(GridSOA * grid_soa) {
     int insert[GRID_CELLS] = {};
 
-    for(size_t i = 0 ; i < GRID_CELLS; i++) grid_soa->offset[i] = 0;
+    for(size_t i = 0 ; i < GRID_CELLS; i++) grid_soa->_offset[i] = 0;
 
     for(size_t i = 0 ; i < MAX_BOID_COUNT; i++) {
         int x = (int) floorf(BOID_SOA().x[i] / CELL_SIZE);
         int y = (int) floorf(BOID_SOA().y[i] / CELL_SIZE);
         int cell = y * GRID_W + x;
-        grid_soa->offset[cell] += 1;
+        grid_soa->_offset[cell] += 1;
         insert[cell] += 1;
     }
 
     int cummulative = 0;
     for(size_t i = 0 ; i < GRID_CELLS ; i++){
-        int count = grid_soa->offset[i];
-        grid_soa->offset[i] = cummulative;
+        int count = grid_soa->_offset[i];
+        grid_soa->_offset[i] = cummulative;
         insert[i] = cummulative;
         cummulative += count;
     }
-    grid_soa->offset[GRID_CELLS] = cummulative;
+    grid_soa->_offset[GRID_CELLS] = cummulative;
 
     for(size_t i = 0 ; i < MAX_BOID_COUNT; i++){
         int x = (int) floorf(BOID_SOA().x[i] / CELL_SIZE);
@@ -380,24 +386,36 @@ void update(float delta_time, App * app){
         int neighbours = 0;
 
         for (int dy = -1 ; dy <= 1; dy++){
-            for (int dx = -1; dx <= 1; dx++){
 
-                int nx = x + dx, ny = y + dy;
+            //for (int dx = -1; dx <= 1; dx++){
 
-                if (nx < 0 || ny < 0 || nx >= GRID_W || ny >= GRID_H) continue;
-                int cell = ny * GRID_W + nx;
+            //    int nx = x + dx, ny = y + dy;
 
-                int start = APP()->grid_soa.offset[cell];
-                int end = APP()->grid_soa.offset[cell + 1];
+            //    if (nx < 0 || ny < 0 || nx >= GRID_W || ny >= GRID_H) continue;
+            //    int cell = ny * GRID_W + nx;
 
-                NeighbourAcc this_cell= simd_acculumate_neighbours(self_pos, i, start, end);
-                // NeighbourAcc this_cell= acculumate_neighbours(self_pos, i, start, end);
-                
-                separation = Vector2Add(separation, this_cell.separation);
-                align_sum = Vector2Add(align_sum, this_cell.align_sum);
-                cohesion_sum = Vector2Add(cohesion_sum, this_cell.cohesion_sum);
-                neighbours += this_cell.neighbours;
-            }
+            //    int start = APP()->grid_soa.offset[cell];
+            //    int end = APP()->grid_soa.offset[cell + 1];
+
+            //    NeighbourAcc this_cell= simd_acculumate_neighbours(self_pos, i, start, end);
+            //    // NeighbourAcc this_cell= acculumate_neighbours(self_pos, i, start, end);
+            //    
+            //    separation = Vector2Add(separation, this_cell.separation);
+            //    align_sum = Vector2Add(align_sum, this_cell.align_sum);
+            //    cohesion_sum = Vector2Add(cohesion_sum, this_cell.cohesion_sum);
+            //    neighbours += this_cell.neighbours;
+            //}
+
+            int start = offset(&APP()->grid_soa, (y + dy) * GRID_W + x - 1);
+            int end = offset(&APP()->grid_soa, (y + dy) * GRID_W + x + 2);
+
+            NeighbourAcc this_cell= simd_acculumate_neighbours(self_pos, i, start, end);
+            
+            separation = Vector2Add(separation, this_cell.separation);
+            align_sum = Vector2Add(align_sum, this_cell.align_sum);
+            cohesion_sum = Vector2Add(cohesion_sum, this_cell.cohesion_sum);
+            neighbours += this_cell.neighbours;
+            
         }
 
         Vector2 accel = {0};
