@@ -126,11 +126,11 @@ typedef struct {
 #define WORLD_WIDTH  1600
 #define WORLD_HEIGHT 900
 
-#define NEIGHBOUR_RADIUS  45.0f
-#define SEPARATION_RADIUS 15.0f
-#define SEPARATION_WEIGHT 14.0f
-#define ALIGNMENT_WEIGHT  8.0f
-#define COHESION_WEIGHT   3.0f
+#define NEIGHBOUR_RADIUS  30.0f
+#define SEPARATION_RADIUS 10.0f
+#define SEPARATION_WEIGHT 8.0f
+#define ALIGNMENT_WEIGHT  5.0f
+#define COHESION_WEIGHT   2.0f
 #define MAX_SPEED         100.0f
 #define MIN_SPEED         50.0f
 
@@ -140,7 +140,7 @@ typedef struct {
 #define GRID_H ((int) (WORLD_HEIGHT / CELL_SIZE) + 1)
 #define GRID_CELLS (GRID_W * GRID_H)
 
-#define MAX_BOID_COUNT  20000
+#define MAX_BOID_COUNT  50000
 
 typedef struct {
     int offset[GRID_CELLS + 1];
@@ -193,11 +193,7 @@ void init_window() {
 
 void render() {
     for (int i = 0 ; i < APP()->boid_count; i++){
-        float angle = atan2(BOID_SOA().vy[i], BOID_SOA().vx[i]);
-        DrawPoly(
-                (Vector2){BOID_SOA().x[i], BOID_SOA().y[i]}, 
-                3, 5, angle * RAD2DEG, 
-                (Color){255, 255, 255, 255});
+        DrawRectangle(BOID_SOA().x[i] - 1, BOID_SOA().y[i] - 1, 2, 2, WHITE);
     }
 }
 
@@ -418,7 +414,7 @@ void * _thread_start(void * data) {
 }
 
 
-#define THREAD_COUNT 8
+#define THREAD_COUNT 10
 int main(){
 
     App app = {};
