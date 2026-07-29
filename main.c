@@ -140,7 +140,7 @@ typedef struct {
 #define GRID_H ((int) (WORLD_HEIGHT / CELL_SIZE) + 1)
 #define GRID_CELLS (GRID_W * GRID_H)
 
-#define MAX_BOID_COUNT  100000
+#define MAX_BOID_COUNT  50000
 
 typedef struct {
     int _offset[GRID_CELLS + 1];
