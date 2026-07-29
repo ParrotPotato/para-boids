@@ -37,6 +37,16 @@ from 20k to 50k in the process:
 
 ![fps counters after SIMD](fps-counter1.png)
 
+Rendering was the next bottleneck: drawing each boid individually (one `DrawRectangle`/
+`DrawPixel` call per boid) was CPU-bound on draw-call overhead, not GPU work, and had
+grown larger than the vectorized update itself. It's replaced with a single GPU-instanced
+draw built directly on `rlgl` (one triangle mesh, one per-instance `(x, y, vx, vy)` buffer,
+a custom vertex shader doing the rotation from the direction vector), which also makes it
+straightforward to render each boid as a triangle oriented in its direction of travel
+instead of a plain point. Render time dropped from ~11ms to under 1ms:
+
+![fps counters after rlgl instancing](fps-counter2.png)
+
 ## Layout
 
 - `main.c` — the boids simulation: update/render loop, flocking rules (separation,

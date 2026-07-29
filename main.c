@@ -14,30 +14,6 @@
 
 #include "util.c"
 
-
-#define COLOR_COUNT 19
-Color colors[] = {
- YELLOW,
- GOLD,
- ORANGE,
- PINK,
- RED,
- MAROON,
- GREEN,
- LIME,
- DARKGREEN,
- SKYBLUE,
- BLUE,
- DARKBLUE,
- PURPLE,
- VIOLET,
- DARKPURPLE,
- BEIGE,
- BROWN,
- DARKBROWN,
- MAGENTA,
-};
-
 typedef struct {
     atomic_int count;
     atomic_int sense;
@@ -69,7 +45,6 @@ void barrier_lane(Barrier * barrier) {
 
     thread_sense = expected_sense;
 }
-
 
 typedef struct {
     Barrier barrier;
@@ -228,8 +203,8 @@ void init_renderer() {
         "void main(){\n"
         "vec2 dir = normalize(vec2(-inst.z, -inst.w));\n"
         "vec2 rotated = vec2(\n"
-        "   tri.x * dir.y + tri.y * dir.x,\n"
-        "   -tri.x * dir.x + tri.y * dir.y\n"
+        "tri.x * dir.y + tri.y * dir.x,\n"
+        "-tri.x * dir.x + tri.y * dir.y\n"
         ");\n"
         "gl_Position = mvp * vec4(inst.x + rotated.x, inst.y + rotated.y, 0.0, 1.0);\n"
         "}";
@@ -589,7 +564,7 @@ void * _thread_start(void * data) {
 }
 
 
-#define THREAD_COUNT 10
+#define THREAD_COUNT 11
 int main(){
 
     App app = {};
@@ -627,6 +602,9 @@ int main(){
     for(int i =0 ; i < THREAD_COUNT - 1; i++){
         pthread_join(other_threads[i], NULL);
     }
+
+
     return 0;
+    
 }
 
