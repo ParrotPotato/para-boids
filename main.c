@@ -9,6 +9,7 @@
 #include <stdalign.h>
 
 #include <raylib.h>
+#include <rlgl.h>
 #include <raymath.h>
 
 #include "util.c"
@@ -161,13 +162,22 @@ typedef struct {
 } BoidSOA;
 
 typedef struct {
+    
+    // sim information
+
     BoidSOA boid_soa[2];
     int front;
     size_t boid_count;
     GridSOA grid_soa;
-//    Grid grid;
     float delta_time;
-} App;
+    
+    // render information 
+    unsigned int vao, tribuffer, instancebuffer;
+    unsigned int shader_id;
+    int mvp_loc;
+
+    Matrix mvp;
+}  App;
 
 #define APP()              ((App *)ctx.group->app)
 #define BOID_SOA()         ((APP())->boid_soa[(APP())->front])
@@ -197,10 +207,67 @@ void init_window() {
     APP()->boid_count = MAX_BOID_COUNT;
 }
 
+void init_renderer() {
+    unsigned int vao = rlLoadVertexArray();
+    rlEnableVertexArray(vao);
+
+    float triangle[] = {0.0, -4.0, -2.4, 0.0, 2.4, 0.0};
+    unsigned int tribuffer = rlLoadVertexBuffer(triangle, sizeof(triangle), false); // false -> static
+    rlSetVertexAttribute(0, 2, RL_FLOAT, false, 0, 0);
+    rlEnableVertexAttribute(0);
+
+    unsigned int instancebuffer = rlLoadVertexBuffer(NULL, MAX_BOID_COUNT * 4 * sizeof(float), true); // true -> dynamic 
+    rlSetVertexAttribute(1, 4, RL_FLOAT, false, 0, 0);
+    rlEnableVertexAttribute(1);
+    rlSetVertexAttributeDivisor(1, 1);
+
+    const char * vertex_src = "#version 400\n"
+        "layout(location = 0) in vec2 tri;\n"
+        "layout(location = 1) in vec4 inst;\n"
+        "uniform mat4 mvp;\n"
+        "void main(){\n"
+        "vec2 dir = normalize(vec2(-inst.z, -inst.w));\n"
+        "vec2 rotated = vec2(\n"
+        "   tri.x * dir.y + tri.y * dir.x,\n"
+        "   -tri.x * dir.x + tri.y * dir.y\n"
+        ");\n"
+        "gl_Position = mvp * vec4(inst.x + rotated.x, inst.y + rotated.y, 0.0, 1.0);\n"
+        "}";
+
+    const char * fragment_src = "#version 400\n"
+        "out vec4 outcolor;\n"
+        "void main() {\n"
+        "outcolor = vec4(1.0, 1.0, 1.0, 1.0);\n"
+        "}\n";
+
+    unsigned int shader_id = rlLoadShaderCode(vertex_src, fragment_src);
+    int mvp_loc = rlGetLocationUniform(shader_id, "mvp");
+
+    Matrix mvp = MatrixOrtho(0, WORLD_WIDTH, WORLD_HEIGHT, 0, -1.0f, 1.0f);
+
+    APP()->vao = vao;
+    APP()->tribuffer = tribuffer;
+    APP()->instancebuffer = instancebuffer ;
+    APP()->shader_id = shader_id;
+    APP()->mvp_loc = mvp_loc;
+    APP()->mvp = mvp;
+}
+
 void render() {
+    static float instance_data[MAX_BOID_COUNT * 4] = {};
     for (int i = 0 ; i < APP()->boid_count; i++){
-        DrawPixel(BOID_SOA().x[i], BOID_SOA().y[i],  WHITE);
+        instance_data[i * 4 + 0] = BOID_SOA().x[i];
+        instance_data[i * 4 + 1] = BOID_SOA().y[i];
+        instance_data[i * 4 + 2] = BOID_SOA().vx[i];
+        instance_data[i * 4 + 3] = BOID_SOA().vy[i];
     }
+    rlUpdateVertexBuffer(APP()->instancebuffer, instance_data, APP()->boid_count * 4 * sizeof(float), 0);
+
+    rlDrawRenderBatchActive();
+    rlEnableShader(APP()->shader_id);
+    rlSetUniformMatrix(APP()->mvp_loc, APP()->mvp);
+    rlEnableVertexArray(APP()->vao);
+    rlDrawVertexArrayInstanced(0, 3, APP()->boid_count);
 }
 
 void build_grid_soa(GridSOA * grid_soa) {
@@ -387,25 +454,6 @@ void update(float delta_time, App * app){
 
         for (int dy = -1 ; dy <= 1; dy++){
 
-            //for (int dx = -1; dx <= 1; dx++){
-
-            //    int nx = x + dx, ny = y + dy;
-
-            //    if (nx < 0 || ny < 0 || nx >= GRID_W || ny >= GRID_H) continue;
-            //    int cell = ny * GRID_W + nx;
-
-            //    int start = APP()->grid_soa.offset[cell];
-            //    int end = APP()->grid_soa.offset[cell + 1];
-
-            //    NeighbourAcc this_cell= simd_acculumate_neighbours(self_pos, i, start, end);
-            //    // NeighbourAcc this_cell= acculumate_neighbours(self_pos, i, start, end);
-            //    
-            //    separation = Vector2Add(separation, this_cell.separation);
-            //    align_sum = Vector2Add(align_sum, this_cell.align_sum);
-            //    cohesion_sum = Vector2Add(cohesion_sum, this_cell.cohesion_sum);
-            //    neighbours += this_cell.neighbours;
-            //}
-
             int start = offset(&APP()->grid_soa, (y + dy) * GRID_W + x - 1);
             int end = offset(&APP()->grid_soa, (y + dy) * GRID_W + x + 2);
 
@@ -430,11 +478,6 @@ void update(float delta_time, App * app){
         }
 
 #define NOISE_STRENGTH 0.3f
-        //Vector2 noise = (Vector2) {
-        //    (GetRandomValue(-100, 100) / 100.0f * NOISE_STRENGTH),
-        //    (GetRandomValue(-100, 100) / 100.0f * NOISE_STRENGTH),
-        //};
-        //accel = Vector2Add(accel, noise);
 
         Vector2 vel = Vector2Add(self_vel, Vector2Scale(accel, delta_time));
         vel = Vector2ClampValue(vel, MIN_SPEED, MAX_SPEED);
@@ -469,7 +512,10 @@ void update(float delta_time, App * app){
 int thread_main() {
     LANE_BARRIER();
 
-    if (LANE_ID() == 0) init_window();
+    if (LANE_ID() == 0) {
+        init_window();
+        init_renderer();
+    }
     static atomic_int window_should_close = 0;
 
     double update_time = 0;
