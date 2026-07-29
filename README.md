@@ -32,7 +32,8 @@ The neighbor search inside `update()` is now AVX2-vectorized: for each boid, the
 grid's per-cell boid runs (already contiguous thanks to the sorted layout above) are
 scanned 8-at-a-time, with the three cells in a grid row merged into a single range
 before vectorizing, since they're contiguous by construction. Per-thread update time
-dropped from ~24-28ms to ~5ms with this in place:
+dropped from ~24-28ms to ~5ms with this in place, at a boid count that's also grown
+from 20k to 50k in the process:
 
 ![fps counters after SIMD](fps-counter1.png)
 
