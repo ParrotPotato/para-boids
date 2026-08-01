@@ -715,7 +715,7 @@ int thread_main() {
             APP()->delta_time = GetFrameTime();
 
             BeginDrawing();
-            ClearBackground(BLACK);
+            ClearBackground(BLUE);
 
             render_update_camera();
 
@@ -839,8 +839,6 @@ int main(){
         pthread_join(other_threads[i], NULL);
     }
 
-
     return 0;
-    
 }
 
