@@ -126,6 +126,7 @@ typedef struct {
 
 #define WORLD_WIDTH  1600
 #define WORLD_HEIGHT 900
+#define WORLD_DEPTH  600
 
 #define NEIGHBOUR_RADIUS  30.0f
 #define SEPARATION_RADIUS 10.0f
@@ -135,11 +136,11 @@ typedef struct {
 #define MAX_SPEED         100.0f
 #define MIN_SPEED         50.0f
 
-
-#define CELL_SIZE NEIGHBOUR_RADIUS  
-#define GRID_W ((int) (WORLD_WIDTH / CELL_SIZE) + 1)
+#define CELL_SIZE NEIGHBOUR_RADIUS
+#define GRID_W ((int) (WORLD_WIDTH  / CELL_SIZE) + 1)
 #define GRID_H ((int) (WORLD_HEIGHT / CELL_SIZE) + 1)
-#define GRID_CELLS (GRID_W * GRID_H)
+#define GRID_Z ((int) (WORLD_DEPTH  / CELL_SIZE) + 1) 
+#define GRID_CELLS (GRID_W * GRID_H * GRID_Z)
 
 #define MAX_BOID_COUNT  50000
 
@@ -157,12 +158,13 @@ int offset(GridSOA * grid_soa, int x) {
 typedef struct {
     float x[MAX_BOID_COUNT];
     float y[MAX_BOID_COUNT];
+    float z[MAX_BOID_COUNT];
     float vx[MAX_BOID_COUNT];
     float vy[MAX_BOID_COUNT];
+    float vz[MAX_BOID_COUNT];
 } BoidSOA;
 
 typedef struct {
-    
     // sim information
 
     BoidSOA boid_soa[2];
@@ -192,17 +194,20 @@ void init_window() {
 
         float x =GetRandomValue(0, WORLD_WIDTH * 1000)  / 1000.0f;
         float y = GetRandomValue(0, WORLD_HEIGHT * 1000) / 1000.0f;
+        float z = GetRandomValue(0, WORLD_HEIGHT * 1000) / 1000.0f;
 
         float vx = GetRandomValue(-1000, 1000) / 1000.0f;
         float vy = GetRandomValue(-1000, 1000) / 1000.0f;
+        float vz = GetRandomValue(-1000, 1000) / 1000.0f;
         
-        Vector2 vel = Vector2Normalize((Vector2){vx, vy});
+        Vector3 vel = Vector3Normalize((Vector3){vx, vy, vz});
 
         BOID_SOA().x[i] = x;
         BOID_SOA().y[i] = y;
+        BOID_SOA().z[i] = z;
         BOID_SOA().vx[i] = vel.x;
         BOID_SOA().vy[i] = vel.y;
-        
+        BOID_SOA().vz[i] = vel.z;
     }
     APP()->boid_count = MAX_BOID_COUNT;
 }
@@ -237,7 +242,7 @@ void init_renderer() {
     const char * fragment_src = "#version 400\n"
         "out vec4 outcolor;\n"
         "void main() {\n"
-        "outcolor = vec4(1.0, 1.0, 1.0, 1.0);\n"
+        "outcolor = vec4(1.0, 1.0, 1.0, 0.2);\n"
         "}\n";
 
     unsigned int shader_id = rlLoadShaderCode(vertex_src, fragment_src);
@@ -271,19 +276,20 @@ void render() {
 }
 
 void build_grid_soa(GridSOA * grid_soa) {
-    int insert[GRID_CELLS] = {};
+    long long insert[GRID_CELLS] = {};
 
     for(size_t i = 0 ; i < GRID_CELLS; i++) grid_soa->_offset[i] = 0;
 
     for(size_t i = 0 ; i < MAX_BOID_COUNT; i++) {
         int x = (int) floorf(BOID_SOA().x[i] / CELL_SIZE);
         int y = (int) floorf(BOID_SOA().y[i] / CELL_SIZE);
-        int cell = y * GRID_W + x;
+        int z = (int) floorf(BOID_SOA().z[i] / CELL_SIZE);
+        long long cell = y * GRID_W * GRID_Z + z * GRID_W + x;
         grid_soa->_offset[cell] += 1;
         insert[cell] += 1;
     }
 
-    int cummulative = 0;
+    long long cummulative = 0;
     for(size_t i = 0 ; i < GRID_CELLS ; i++){
         int count = grid_soa->_offset[i];
         grid_soa->_offset[i] = cummulative;
@@ -295,45 +301,49 @@ void build_grid_soa(GridSOA * grid_soa) {
     for(size_t i = 0 ; i < MAX_BOID_COUNT; i++){
         int x = (int) floorf(BOID_SOA().x[i] / CELL_SIZE);
         int y = (int) floorf(BOID_SOA().y[i] / CELL_SIZE);
-        int cell = y * GRID_W + x;
+        int z = (int) floorf(BOID_SOA().z[i] / CELL_SIZE);
+        long long cell = y * GRID_W * GRID_Z +  z * GRID_W + x;
 
-        int offset = insert[cell];
+        long long offset = insert[cell];
         insert[cell] += 1;
         grid_soa->indices[offset] = i;
 
         NEXT_BOID_SOA().x[offset] = BOID_SOA().x[i];
         NEXT_BOID_SOA().y[offset] = BOID_SOA().y[i];
+        NEXT_BOID_SOA().z[offset] = BOID_SOA().z[i];
+
         NEXT_BOID_SOA().vx[offset] = BOID_SOA().vx[i];
         NEXT_BOID_SOA().vy[offset] = BOID_SOA().vy[i];
+        NEXT_BOID_SOA().vz[offset] = BOID_SOA().vz[i];
     }
 
     FLIP();
 }
 
 typedef struct {
-    Vector2 separation, align_sum, cohesion_sum;
+    Vector3 separation, align_sum, cohesion_sum;
     int neighbours;
 }NeighbourAcc;
 
-NeighbourAcc acculumate_neighbours(Vector2 self_pos, int self_idx, int start, int end) {
+NeighbourAcc acculumate_neighbours(Vector3 self_pos, int self_idx, int start, int end, float * x, float * y, float * z, float * vx, float * vy, float * vz) {
     NeighbourAcc result = {};
     for (int j = start; j < end; j++){
         if (j == self_idx) continue;
 
-        Vector2 other_pos = {BOID_SOA().x[j], BOID_SOA().y[j]};
-        Vector2 other_vel = {BOID_SOA().vx[j], BOID_SOA().vy[j]};
+        Vector3 other_pos = {x[j], y[j], z[j]};
+        Vector3 other_vel = {vx[j], vy[j], vz[j]};
 
-        float dist_sq =  Vector2DistanceSqr(self_pos, other_pos);
+        float dist_sq =  Vector3DistanceSqr(self_pos, other_pos);
         if (dist_sq >= NEIGHBOUR_RADIUS * NEIGHBOUR_RADIUS) continue;
 
         if (dist_sq < SEPARATION_RADIUS * SEPARATION_RADIUS && dist_sq > 0.000001f * 0.000001f) {
             float dist = sqrtf(dist_sq);
-            Vector2 away = Vector2Scale(Vector2Subtract(self_pos, other_pos), 1.0f/dist);
-            result.separation = Vector2Add(result.separation, away);
+            Vector3 away = Vector3Scale(Vector3Subtract(self_pos, other_pos), 1.0f/dist);
+            result.separation = Vector3Add(result.separation, away);
         }
 
-        result.align_sum = Vector2Add(result.align_sum, other_vel);
-        result.cohesion_sum = Vector2Add(result.cohesion_sum, other_pos);
+        result.align_sum = Vector3Add(result.align_sum, other_vel);
+        result.cohesion_sum = Vector3Add(result.cohesion_sum, other_pos);
         result.neighbours++;
     }
     return result;
@@ -351,18 +361,21 @@ static inline float hsum256_ps(__m256 v) {
     return _mm_cvtss_f32(lo); // return the first value 
 }
 
-NeighbourAcc simd_acculumate_neighbours(Vector2 self_pos, int self_idx, int start, int end, float * x, float * y, float * vx, float * vy) {
+NeighbourAcc simd_acculumate_neighbours(Vector3 self_pos, int self_idx, int start, int end, float * x, float * y, float * z, float * vx, float * vy, float * vz) {
     NeighbourAcc result = {};
 
     __m256 self_x = _mm256_set1_ps(self_pos.x);
     __m256 self_y = _mm256_set1_ps(self_pos.y);
+    __m256 self_z = _mm256_set1_ps(self_pos.z);
+
     __m256 self_idx8 = _mm256_set1_ps((float) self_idx);
 
     __m256 lane_offsets = _mm256_setr_ps(0, 1, 2, 3, 4, 5, 6, 7);
 
-    __m256 sep_x = _mm256_setzero_ps(), sep_y = _mm256_setzero_ps();
-    __m256 align_x = _mm256_setzero_ps(), align_y = _mm256_setzero_ps();
-    __m256 coh_x = _mm256_setzero_ps(), coh_y = _mm256_setzero_ps();
+    __m256 sep_x = _mm256_setzero_ps(), sep_y = _mm256_setzero_ps(), sep_z = _mm256_setzero_ps();
+    __m256 align_x = _mm256_setzero_ps(), align_y = _mm256_setzero_ps(), align_z = _mm256_setzero_ps();
+    __m256 coh_x = _mm256_setzero_ps(), coh_y = _mm256_setzero_ps(), coh_z = _mm256_setzero_ps();
+    
     __m256 count = _mm256_setzero_ps();
 
     int j = start;
@@ -370,18 +383,23 @@ NeighbourAcc simd_acculumate_neighbours(Vector2 self_pos, int self_idx, int star
     for(; j + 8 <= end ; j+=8){
         __m256 ox = _mm256_loadu_ps(&x[j]);
         __m256 oy = _mm256_loadu_ps(&y[j]);
+        __m256 oz = _mm256_loadu_ps(&z[j]);
         __m256 ovx = _mm256_loadu_ps(&vx[j]);
         __m256 ovy = _mm256_loadu_ps(&vy[j]);
+        __m256 ovz = _mm256_loadu_ps(&vz[j]);
 
         __m256 j_idx = _mm256_add_ps(_mm256_set1_ps((float) j), lane_offsets);
         __m256 not_self = _mm256_cmp_ps(j_idx, self_idx8, _CMP_NEQ_OQ);
 
         __m256 dx = _mm256_sub_ps(ox, self_x);
         __m256 dy = _mm256_sub_ps(oy, self_y);
-        __m256 dist_sq = _mm256_add_ps(_mm256_mul_ps(dx, dx), _mm256_mul_ps(dy, dy));
+        __m256 dz = _mm256_sub_ps(oz, self_z);
+
+        __m256 dist_sq = _mm256_add_ps(_mm256_mul_ps(dx, dx), 
+                _mm256_add_ps(_mm256_mul_ps(dy, dy), _mm256_mul_ps(dz, dz)));
         __m256 inv_dist  = _mm256_rsqrt_ps(dist_sq);
 
-        __m256 valid = _mm256_and_ps(
+        __m256 neighbour_mask = _mm256_and_ps(
                 not_self, 
                 _mm256_cmp_ps(
                     dist_sq, 
@@ -399,33 +417,41 @@ NeighbourAcc simd_acculumate_neighbours(Vector2 self_pos, int self_idx, int star
                     )
                 );
 
-        align_x = _mm256_add_ps(align_x, _mm256_and_ps(ovx, valid));
-        align_y = _mm256_add_ps(align_y, _mm256_and_ps(ovy, valid));
-        coh_x = _mm256_add_ps(coh_x, _mm256_and_ps(ox, valid));
-        coh_y = _mm256_add_ps(coh_y, _mm256_and_ps(oy, valid));
+        align_x = _mm256_add_ps(align_x, _mm256_and_ps(ovx, neighbour_mask));
+        align_y = _mm256_add_ps(align_y, _mm256_and_ps(ovy, neighbour_mask));
+        align_z = _mm256_add_ps(align_z, _mm256_and_ps(ovz, neighbour_mask));
+
+        coh_x = _mm256_add_ps(coh_x, _mm256_and_ps(ox, neighbour_mask));
+        coh_y = _mm256_add_ps(coh_y, _mm256_and_ps(oy, neighbour_mask));
+        coh_z = _mm256_add_ps(coh_z, _mm256_and_ps(oz, neighbour_mask));
 
         sep_x = _mm256_add_ps(sep_x, _mm256_and_ps(
                     _mm256_mul_ps(dx, inv_dist), sep_mask));
         sep_y = _mm256_add_ps(sep_y, _mm256_and_ps(
                     _mm256_mul_ps(dy, inv_dist), sep_mask));
+        sep_z = _mm256_add_ps(sep_z, _mm256_and_ps(
+                    _mm256_mul_ps(dz, inv_dist), sep_mask));
 
-        count = _mm256_add_ps(count, _mm256_and_ps(_mm256_set1_ps(1.0f), valid));
+        count = _mm256_add_ps(count, _mm256_and_ps(_mm256_set1_ps(1.0f), neighbour_mask));
     }
     
-    NeighbourAcc tail_result = acculumate_neighbours(self_pos, self_idx, j, end);
+    NeighbourAcc tail_result = acculumate_neighbours(self_pos, self_idx, j, end, x, y, z, vx, vy, vz);
     
     result.neighbours = hsum256_ps(count) + tail_result.neighbours;
-    result.separation = (Vector2){
+    result.separation = (Vector3){
         .x = (-1.0f * hsum256_ps(sep_x)) + tail_result.separation.x, // since separation is self - other and dx and dy were other - self
         .y = (-1.0f * hsum256_ps(sep_y)) + tail_result.separation.y,
+        .z = (-1.0f * hsum256_ps(sep_z)) + tail_result.separation.z,
     };
-    result.cohesion_sum = (Vector2){
+    result.cohesion_sum = (Vector3){
         .x = hsum256_ps(coh_x) + tail_result.cohesion_sum.x,
         .y = hsum256_ps(coh_y) + tail_result.cohesion_sum.y,
+        .z = hsum256_ps(coh_z) + tail_result.cohesion_sum.z,
     };
-    result.align_sum = (Vector2) {
+    result.align_sum = (Vector3) {
         .x = hsum256_ps(align_x) + tail_result.align_sum.x,
         .y = hsum256_ps(align_y) + tail_result.align_sum.y,
+        .z = hsum256_ps(align_z) + tail_result.align_sum.z,
     };
 
     return result;
@@ -447,13 +473,14 @@ void update(float dt, App * app){
         
         int x = (int) floorf(BOID_SOA().x[i] / CELL_SIZE);
         int y = (int) floorf(BOID_SOA().y[i] / CELL_SIZE);
+        int z = (int) floorf(BOID_SOA().z[i] / CELL_SIZE);
 
-        Vector2 self_pos = {BOID_SOA().x[i], BOID_SOA().y[i]};
-        Vector2 self_vel = {BOID_SOA().vx[i], BOID_SOA().vy[i]};
+        Vector3 self_pos = {BOID_SOA().x[i], BOID_SOA().y[i], BOID_SOA().z[i]};
+        Vector3 self_vel = {BOID_SOA().vx[i], BOID_SOA().vy[i], BOID_SOA().vz[i]};
 
-        Vector2 separation = {};
-        Vector2 align_sum = {};
-        Vector2 cohesion_sum = {};
+        Vector3 separation = {};
+        Vector3 align_sum = {};
+        Vector3 cohesion_sum = {};
 
         int neighbours = 0;
         
@@ -466,22 +493,24 @@ void update(float dt, App * app){
 #ifndef ARENA_VECTORIZED 
 
             for (int dy = -1 ; dy <= 1; dy++){
+                for(int dz = -1; dz <= 1; dz++){
+                    int start = offset(&APP()->grid_soa, (y + dy) * GRID_W * GRID_Z + (z + dz) * GRID_W + x - 1);
+                    int end = offset(&APP()->grid_soa, (y + dy) * GRID_W  * GRID_Z + (z + dz) * GRID_W + x + 2);
 
-                int start = offset(&APP()->grid_soa, (y + dy) * GRID_W + x - 1);
-                int end = offset(&APP()->grid_soa, (y + dy) * GRID_W + x + 2);
+                    NeighbourAcc this_cell= simd_acculumate_neighbours(self_pos, i, start, end,
+                            BOID_SOA().x,
+                            BOID_SOA().y,
+                            BOID_SOA().z,
+                            BOID_SOA().vx,
+                            BOID_SOA().vy,
+                            BOID_SOA().vz
+                            );
 
-                NeighbourAcc this_cell= simd_acculumate_neighbours(self_pos, i, start, end,
-                        BOID_SOA().x,
-                        BOID_SOA().y,
-                        BOID_SOA().vx,
-                        BOID_SOA().vy
-                        );
-
-                separation = Vector2Add(separation, this_cell.separation);
-                align_sum = Vector2Add(align_sum, this_cell.align_sum);
-                cohesion_sum = Vector2Add(cohesion_sum, this_cell.cohesion_sum);
-                neighbours += this_cell.neighbours;
-
+                    separation = Vector3Add(separation, this_cell.separation);
+                    align_sum = Vector3Add(align_sum, this_cell.align_sum);
+                    cohesion_sum = Vector3Add(cohesion_sum, this_cell.cohesion_sum);
+                    neighbours += this_cell.neighbours;
+                }
             }
 #else
             int boid_list_size = 0;
@@ -538,22 +567,22 @@ void update(float dt, App * app){
         avg_neighbour_calc_time.tv_sec  += delta.tv_sec;
 
 
-        Vector2 accel = {0};
+        Vector3 accel = {0};
         if (neighbours > 0){
-            Vector2 avg_vel = Vector2Scale(align_sum, 1.0f / neighbours);
-            Vector2 center  = Vector2Scale(cohesion_sum, 1.0f / neighbours);
-            Vector2 toward_center = Vector2Subtract(center, self_pos);
+            Vector3 avg_vel = Vector3Scale(align_sum, 1.0f / neighbours);
+            Vector3 center  = Vector3Scale(cohesion_sum, 1.0f / neighbours);
+            Vector3 toward_center = Vector3Subtract(center, self_pos);
 
-            accel = Vector2Add(accel, Vector2Scale(separation, SEPARATION_WEIGHT));
-            accel = Vector2Add(accel, Vector2Scale(Vector2Subtract(avg_vel, self_vel), ALIGNMENT_WEIGHT));
-            accel = Vector2Add(accel, Vector2Scale(toward_center, COHESION_WEIGHT));
+            accel = Vector3Add(accel, Vector3Scale(separation, SEPARATION_WEIGHT));
+            accel = Vector3Add(accel, Vector3Scale(Vector3Subtract(avg_vel, self_vel), ALIGNMENT_WEIGHT));
+            accel = Vector3Add(accel, Vector3Scale(toward_center, COHESION_WEIGHT));
         }
 
 #define NOISE_STRENGTH 0.3f
 
-        Vector2 vel = Vector2Add(self_vel, Vector2Scale(accel, dt));
-        vel = Vector2ClampValue(vel, MIN_SPEED, MAX_SPEED);
-        Vector2 pos = Vector2Add(self_pos, Vector2Scale(vel, dt));
+        Vector3 vel = Vector3Add(self_vel, Vector3Scale(accel, dt));
+        vel = Vector3ClampValue(vel, MIN_SPEED, MAX_SPEED);
+        Vector3 pos = Vector3Add(self_pos, Vector3Scale(vel, dt));
 
         if (pos.x < 0.0f) {
             pos.x += WORLD_WIDTH;
@@ -567,13 +596,21 @@ void update(float dt, App * app){
             pos.y -= WORLD_HEIGHT;
         }
 
+        if (pos.z < 0.0f){
+            pos.z += WORLD_DEPTH;
+        } else if (pos.z > WORLD_DEPTH){
+            pos.z -= WORLD_DEPTH;
+        }
+
         self_pos  = pos;
         self_vel  = vel;
 
         NEXT_BOID_SOA().x[i] = self_pos.x;
         NEXT_BOID_SOA().y[i] = self_pos.y;
+        NEXT_BOID_SOA().z[i] = self_pos.z;
         NEXT_BOID_SOA().vx[i] = self_vel.x;
         NEXT_BOID_SOA().vy[i] = self_vel.y;
+        NEXT_BOID_SOA().vz[i] = self_vel.z;
     }
     
     clock_gettime(CLOCK_MONOTONIC, &end_time);
@@ -704,7 +741,7 @@ int main(){
     Reserve reserve = {};
     reserve_init(&reserve, GB(4));
 
-    Arena   thread_arenas[THREAD_COUNT]= {};
+    Arena thread_arenas[THREAD_COUNT]= {};
     for (int i = 0; i < THREAD_COUNT; i++){
         reserve_alloc_subarena(&reserve, &thread_arenas[i], MB(200));
     }
@@ -714,7 +751,7 @@ int main(){
     LaneGroup lane_group =  {};
     lane_group.thread_count = THREAD_COUNT;
     lane_group.app = &app;
-    lane_group.thread_performance = &thread_perforamnce;
+    lane_group.thread_performance = (ThreadPerformance *)&thread_perforamnce;
     barrier_init(&lane_group.barrier, THREAD_COUNT);
 
     pthread_t other_threads[THREAD_COUNT - 1];
