@@ -125,7 +125,7 @@ typedef struct {
 } Boid ; 
 
 #define WORLD_WIDTH  1600
-#define WORLD_HEIGHT 1200
+#define WORLD_HEIGHT 900
 #define WORLD_DEPTH  1200
 
 #define NEIGHBOUR_RADIUS  30.0f
@@ -726,6 +726,8 @@ int thread_main() {
     double render_time = 0;
     double build_time = 0;
 
+    bool lane0_perf_stats = false;
+
     while(!atomic_load_explicit(&window_should_close, memory_order_acquire)){
 
         LANE_BARRIER();
@@ -741,8 +743,7 @@ int thread_main() {
 
             render_update_camera();
 
-            char buffer[1024] = {};
-            double render_start_time = GetTime();
+            double render_start_time = GetTime(); 
             render();
             double render_stop_time = GetTime();
             render_time = render_stop_time - render_start_time;
@@ -752,44 +753,51 @@ int thread_main() {
             double build_stop_time = GetTime();
             build_time = build_stop_time - build_start_time;
 
-            
-            DrawRectangle(0, 0, 300, 500,  (Color){255, 255, 255, 180});
-            float yoffset = 10;
+            if (IsKeyPressed(KEY_TAB)){
+                lane0_perf_stats = !lane0_perf_stats;
+            }
 
-            int font_size = 10, y_increment = 15;
-                
-            unsigned int thread_count = LANE_COUNT(); // I don't  like the name thing which is happening here 
-            double thread_update_avg = 0.0f;
-            LaneGroup * grp = ctx.group;
-            for (int i = 0 ; i < LANE_COUNT(); i++){
+            if (lane0_perf_stats){
+                char buffer[1024] = {};
 
-                thread_update_avg += grp->thread_performance[i].ms_update_duration;
+                DrawRectangle(0, 0, 300, 500,  (Color){255, 255, 255, 180});
+                float yoffset = 10;
 
-                snprintf(buffer, 1024, "thread %d update time : %f", i, grp->thread_performance[i].ms_update_duration);
+                int font_size = 10, y_increment = 15;
+
+                unsigned int thread_count = LANE_COUNT(); // I don't  like the name thing which is happening here 
+                double thread_update_avg = 0.0f;
+                LaneGroup * grp = ctx.group;
+                for (int i = 0 ; i < LANE_COUNT(); i++){
+
+                    thread_update_avg += grp->thread_performance[i].ms_update_duration;
+
+                    snprintf(buffer, 1024, "thread %d update time : %f", i, grp->thread_performance[i].ms_update_duration);
+                    DrawText(buffer, 10, yoffset, font_size, BLUE);
+                    yoffset += y_increment;
+
+                    snprintf(buffer, 1024, "thread %d avg update time : %f", i, grp->thread_performance[i].ms_avg_neignbour_calcualtion);
+                    DrawText(buffer, 10, yoffset, font_size, BLUE);
+                    yoffset += y_increment;
+                }
+
+
+                snprintf(buffer, 1024, "FPS: %d", GetFPS());
                 DrawText(buffer, 10, yoffset, font_size, BLUE);
                 yoffset += y_increment;
 
-                snprintf(buffer, 1024, "thread %d avg update time : %f", i, grp->thread_performance[i].ms_avg_neignbour_calcualtion);
+                snprintf(buffer, 1024,  "Render: %lf ms", render_time * 1000.0);
+                DrawText(buffer, 10, yoffset, font_size, BLUE);
+                yoffset += y_increment;
+
+                snprintf(buffer, 1024,  "Build : %lf ms", build_time * 1000.0);
+                DrawText(buffer, 10, yoffset, font_size, BLUE);
+                yoffset += y_increment;
+
+                snprintf(buffer, 1024,  "Update : %lf ms", thread_update_avg / LANE_COUNT());
                 DrawText(buffer, 10, yoffset, font_size, BLUE);
                 yoffset += y_increment;
             }
-
-
-            snprintf(buffer, 1024, "FPS: %d", GetFPS());
-            DrawText(buffer, 10, yoffset, font_size, BLUE);
-            yoffset += y_increment;
-
-            snprintf(buffer, 1024,  "Render: %lf ms", render_time * 1000.0);
-            DrawText(buffer, 10, yoffset, font_size, BLUE);
-            yoffset += y_increment;
-
-            snprintf(buffer, 1024,  "Build : %lf ms", build_time * 1000.0);
-            DrawText(buffer, 10, yoffset, font_size, BLUE);
-            yoffset += y_increment;
-
-            snprintf(buffer, 1024,  "Update : %lf ms", thread_update_avg / LANE_COUNT());
-            DrawText(buffer, 10, yoffset, font_size, BLUE);
-            yoffset += y_increment;
 
             EndDrawing();
 
