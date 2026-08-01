@@ -57,6 +57,48 @@ instead of a plain point. Render time dropped from ~11ms to under 1ms:
 
 ![fps counters after rlgl instancing](fps-counter2.png)
 
+The simulation was then migrated from 2D to 3D. On the physics/SIMD side this meant
+switching every `Vector2` to `Vector3` (positions, velocities, separation/alignment/
+cohesion accumulators), adding a `z`/`vz` lane throughout the SoA and the AVX2 neighbor
+search, and extending the spatial grid with a third axis (`GRID_W × GRID_H × GRID_Z`,
+CSR bucketing keyed on `x,y,z`, and the per-boid neighbor search now looping `dy` and
+`dz` over the surrounding 3×3×3 cells instead of just `dy` over a 1×3 row).
+
+On the rendering side, the flat 2D triangle became an indexed tetrahedron — a small
+vertex/index buffer pair loaded once via `rlLoadVertexBuffer`/`rlLoadVertexBufferElement`
+and drawn with `rlDrawVertexArrayElementsInstanced`. The per-boid instance data grew from
+`(x, y, vx, vy)` packed into a single `vec4` attribute to `(x, y, z)` and `(vx, vy, vz)`
+as two separate `vec3` attributes (a GPU vertex attribute caps out at 4 components, so
+6 floats needs two slots, not one), and the vertex shader now builds a full 3D orientation
+basis from the velocity via `cross()` instead of the old 2D perpendicular trick. The
+projection swapped from an orthographic `MatrixOrtho` to `MatrixPerspective` combined with
+a `MatrixLookAt` view, with `rlEnableDepthTest()` turned on so overlapping boids actually
+occlude by depth instead of by draw order. On top of that sits a simple orbit camera —
+yaw/pitch/distance around the fixed world-center target, driven by arrow keys and the
+mouse wheel, recomputed into the `mvp` uniform once per frame instead of a fixed matrix
+computed once at startup:
+
+![fps counters after 3D renderer](fps-counter3.png)
+
+The 3D migration also surfaced a flocking-behavior bug rather than a rendering one:
+boids would slowly drift into full overlap over time, with no particular concentration
+near any edge of the world. `SEPARATION_RADIUS` had carried over unchanged from the 2D
+tuning, but a fixed radius covers a much smaller volume relative to `NEIGHBOUR_RADIUS`
+in 3D than the same ratio covered in area in 2D (a sphere's volume falls off with radius
+far faster than a disc's area does), so separation was consistently losing the tug-of-war
+against cohesion/alignment at close range. Retuning `SEPARATION_RADIUS` (10 → 20) and
+`SEPARATION_WEIGHT` (8 → 16) for 3D density fixed it.
+
+That tuning fix raises the threshold at which separation kicks in, but the underlying
+force is still constant-strength within that radius — each close neighbor contributes a
+unit-length push (`(self - other) / dist`), the same magnitude whether it's 19 units away
+or 0.1 units away. It doesn't ramp up as two boids approach true coincidence, so it's a
+threshold fix, not a self-scaling one: dense enough clusters could still slowly out-run it
+the same way. A more robust version would scale the push with proximity — dividing by
+`dist` a second time (`(self - other) / dist²`) so separation strengthens sharply at close
+range instead of relying purely on the fixed radius/weight ceiling — noted here as the
+next lever to pull if tighter flocks or higher boid counts bring the overlap back.
+
 ## Layout
 
 - `main.c` — the boids simulation: update/render loop, flocking rules (separation,

@@ -126,15 +126,15 @@ typedef struct {
 
 #define WORLD_WIDTH  1600
 #define WORLD_HEIGHT 900
-#define WORLD_DEPTH  600
+#define WORLD_DEPTH  1200
 
 #define NEIGHBOUR_RADIUS  30.0f
-#define SEPARATION_RADIUS 10.0f
-#define SEPARATION_WEIGHT 8.0f
+#define SEPARATION_RADIUS 20.0f
+#define SEPARATION_WEIGHT 16.0f
 #define ALIGNMENT_WEIGHT  5.0f
 #define COHESION_WEIGHT   2.0f
-#define MAX_SPEED         100.0f
-#define MIN_SPEED         50.0f
+#define MAX_SPEED         400.0f
+#define MIN_SPEED         200.0f
 
 #define CELL_SIZE NEIGHBOUR_RADIUS
 #define GRID_W ((int) (WORLD_WIDTH  / CELL_SIZE) + 1)
@@ -142,7 +142,7 @@ typedef struct {
 #define GRID_Z ((int) (WORLD_DEPTH  / CELL_SIZE) + 1) 
 #define GRID_CELLS (GRID_W * GRID_H * GRID_Z)
 
-#define MAX_BOID_COUNT  50000
+#define MAX_BOID_COUNT  100000
 
 typedef struct {
     int _offset[GRID_CELLS + 1];
@@ -178,7 +178,10 @@ typedef struct {
     unsigned int shader_id;
     int mvp_loc;
 
-    Matrix mvp;
+    float cam_yaw, cam_pitch, cam_distance;
+
+
+    Matrix mvp, proj;
 }  App;
 
 #define APP()              ((App *)ctx.group->app)
@@ -194,7 +197,7 @@ void init_window() {
 
         float x =GetRandomValue(0, WORLD_WIDTH * 1000)  / 1000.0f;
         float y = GetRandomValue(0, WORLD_HEIGHT * 1000) / 1000.0f;
-        float z = GetRandomValue(0, WORLD_HEIGHT * 1000) / 1000.0f;
+        float z = GetRandomValue(0, WORLD_DEPTH * 1000) / 1000.0f;
 
         float vx = GetRandomValue(-1000, 1000) / 1000.0f;
         float vy = GetRandomValue(-1000, 1000) / 1000.0f;
@@ -216,27 +219,48 @@ void init_renderer() {
     unsigned int vao = rlLoadVertexArray();
     rlEnableVertexArray(vao);
 
-    float triangle[] = {0.0, -4.0, -2.4, 0.0, 2.4, 0.0};
-    unsigned int tribuffer = rlLoadVertexBuffer(triangle, sizeof(triangle), false); // false -> static
-    rlSetVertexAttribute(0, 2, RL_FLOAT, false, 0, 0);
+    float tetraheadron[] = {
+        0.0f,  0.0f,  4.0f,   // v0
+        -2.4f, -2.0f, -2.0f,  // v1
+        2.4f, -2.0f, -2.0f,   // v2
+        0.0f,  2.0f, -2.0f,   // v3
+    };
+
+    unsigned short indices[] = {
+        0,1,2, 0,3,1, 0,2,3, 1,3,2
+    };
+
+    unsigned int tribuffer = rlLoadVertexBuffer(tetraheadron, sizeof(tetraheadron), false);
+    rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0);
     rlEnableVertexAttribute(0);
 
-    unsigned int instancebuffer = rlLoadVertexBuffer(NULL, MAX_BOID_COUNT * 4 * sizeof(float), true); // true -> dynamic 
-    rlSetVertexAttribute(1, 4, RL_FLOAT, false, 0, 0);
+    unsigned int indexbuffer = rlLoadVertexBufferElement(indices, sizeof(indices), false); 
+    rlEnableVertexBufferElement(indexbuffer);
+
+    unsigned int instancebuffer = rlLoadVertexBuffer(NULL, MAX_BOID_COUNT * 6 * sizeof(float), true);
+
+    rlSetVertexAttribute(1, 3, RL_FLOAT, false, 6 * sizeof(float), 0);
     rlEnableVertexAttribute(1);
     rlSetVertexAttributeDivisor(1, 1);
 
+    rlSetVertexAttribute(2, 3, RL_FLOAT, false, 6 * sizeof(float), 3 * sizeof(float));
+    rlEnableVertexAttribute(2);
+    rlSetVertexAttributeDivisor(2, 1);
+
+    rlEnableDepthTest();
+
     const char * vertex_src = "#version 400\n"
-        "layout(location = 0) in vec2 tri;\n"
-        "layout(location = 1) in vec4 inst;\n"
+        "layout(location = 0) in vec3 tri;\n"
+        "layout(location = 1) in vec3 pos;\n"
+        "layout(location = 2) in vec3 vel;\n"
         "uniform mat4 mvp;\n"
         "void main(){\n"
-        "vec2 dir = normalize(vec2(-inst.z, -inst.w));\n"
-        "vec2 rotated = vec2(\n"
-        "tri.x * dir.y + tri.y * dir.x,\n"
-        "-tri.x * dir.x + tri.y * dir.y\n"
-        ");\n"
-        "gl_Position = mvp * vec4(inst.x + rotated.x, inst.y + rotated.y, 0.0, 1.0);\n"
+        "vec3 forward = normalize(vel);\n"
+        "vec3 world_up = vec3(0.0, 1.0, 0.0);\n"
+        "vec3 right = normalize(cross(world_up, forward));\n"
+        "vec3 up = cross(forward, right);\n"
+        "vec3 rotated = tri.x *  right + tri.y * up + tri.z * forward;\n"
+        "gl_Position = mvp * vec4(pos + rotated, 1.0);\n"
         "}";
 
     const char * fragment_src = "#version 400\n"
@@ -248,7 +272,17 @@ void init_renderer() {
     unsigned int shader_id = rlLoadShaderCode(vertex_src, fragment_src);
     int mvp_loc = rlGetLocationUniform(shader_id, "mvp");
 
-    Matrix mvp = MatrixOrtho(0, WORLD_WIDTH, WORLD_HEIGHT, 0, -1.0f, 1.0f);
+
+    Vector3 camera_pos    = {WORLD_WIDTH * 0.5f, WORLD_HEIGHT * 0.1f, -WORLD_DEPTH * 2.0f};
+    Vector3 camera_target = {WORLD_WIDTH * 0.5f, WORLD_HEIGHT * 0.5f,  WORLD_DEPTH * 0.5f};
+    Vector3 camera_up     = {0.0f, 1.0f, 0.0f};
+
+    Matrix view = MatrixLookAt(camera_pos, camera_target, camera_up);
+    Matrix proj = MatrixPerspective(
+            DEG2RAD * 60.0f, 
+            (float) WORLD_WIDTH / (float) WORLD_HEIGHT, 10.0f, WORLD_DEPTH * 4.0f);
+
+    Matrix mvp = MatrixMultiply(view, proj);
 
     APP()->vao = vao;
     APP()->tribuffer = tribuffer;
@@ -256,23 +290,52 @@ void init_renderer() {
     APP()->shader_id = shader_id;
     APP()->mvp_loc = mvp_loc;
     APP()->mvp = mvp;
+    APP()->proj = proj;
+    APP()->cam_yaw = 0.0f;
+    APP()->cam_pitch = 0.3f;
+    APP()->cam_distance = WORLD_DEPTH * 2.0f;
+}
+
+void render_update_camera() {
+
+    Vector3 target = {WORLD_WIDTH * 0.5, WORLD_HEIGHT * 0.5, WORLD_DEPTH * 0.5};
+    
+    if (IsKeyDown(KEY_LEFT)) APP()->cam_yaw -= 2.0f * GetFrameTime();
+    if (IsKeyDown(KEY_RIGHT)) APP()->cam_yaw += 2.0f * GetFrameTime();
+    if (IsKeyDown(KEY_UP)) APP()->cam_pitch += 2.0f * GetFrameTime();
+    if (IsKeyDown(KEY_DOWN)) APP()->cam_pitch -= 2.0f * GetFrameTime();
+
+    APP()->cam_pitch = Clamp(APP()->cam_pitch, -1.5f, 1.5f);
+    APP()->cam_distance -= GetMouseWheelMove() * 100.0f;
+    APP()->cam_distance = Clamp(APP()->cam_distance, WORLD_DEPTH * 0.5f, WORLD_DEPTH * 6.0f);
+
+    Vector3 cam_pos = {
+        target.x  + APP()->cam_distance * cosf(APP()->cam_pitch) * sinf(APP()->cam_yaw),
+        target.y  + APP()->cam_distance * sinf(APP()->cam_pitch),
+        target.z  + APP()->cam_distance * cosf(APP()->cam_pitch) * cosf(APP()->cam_yaw),
+    };
+
+    Matrix view = MatrixLookAt(cam_pos, target, (Vector3){0.0, 1.0f, 0.0});
+    APP()->mvp = MatrixMultiply(view, APP()->proj);
 }
 
 void render() {
-    static float instance_data[MAX_BOID_COUNT * 4] = {};
+    static float instance_data[MAX_BOID_COUNT * 6] = {};
     for (int i = 0 ; i < APP()->boid_count; i++){
-        instance_data[i * 4 + 0] = BOID_SOA().x[i];
-        instance_data[i * 4 + 1] = BOID_SOA().y[i];
-        instance_data[i * 4 + 2] = BOID_SOA().vx[i];
-        instance_data[i * 4 + 3] = BOID_SOA().vy[i];
+        instance_data[i * 6 + 0] = BOID_SOA().x[i];
+        instance_data[i * 6 + 1] = BOID_SOA().y[i];
+        instance_data[i * 6 + 2] = BOID_SOA().z[i];
+        instance_data[i * 6 + 3] = BOID_SOA().vx[i];
+        instance_data[i * 6 + 4] = BOID_SOA().vy[i];
+        instance_data[i * 6 + 5] = BOID_SOA().vz[i];
     }
-    rlUpdateVertexBuffer(APP()->instancebuffer, instance_data, APP()->boid_count * 4 * sizeof(float), 0);
+    rlUpdateVertexBuffer(APP()->instancebuffer, instance_data, APP()->boid_count * 6 * sizeof(float), 0);
 
     rlDrawRenderBatchActive();
     rlEnableShader(APP()->shader_id);
     rlSetUniformMatrix(APP()->mvp_loc, APP()->mvp);
     rlEnableVertexArray(APP()->vao);
-    rlDrawVertexArrayInstanced(0, 3, APP()->boid_count);
+    rlDrawVertexArrayElementsInstanced(0, 12, 0, APP()->boid_count);
 }
 
 void build_grid_soa(GridSOA * grid_soa) {
@@ -653,6 +716,8 @@ int thread_main() {
 
             BeginDrawing();
             ClearBackground(BLACK);
+
+            render_update_camera();
 
             char buffer[1024] = {};
             double render_start_time = GetTime();
