@@ -37,6 +37,16 @@ from 20k to 50k in the process:
 
 ![fps counters after SIMD](fps-counter1.png)
 
+One follow-up experiment on that neighbor search: instead of vectorizing each of the
+three per-row cell ranges separately, the three ranges were first gathered with `memcpy`
+into one contiguous per-boid scratch buffer (pulled from the thread's arena, reset every
+boid), so the SIMD loop could run over the merged range in a single pass instead of three.
+Measured against the plain per-row loop, it was slower — ~100 FPS versus 124-144 FPS for
+the three-iteration version, since the `memcpy`s and per-boid arena churn cost more than
+merging the three SIMD calls saved. That version is kept behind `#ifdef ARENA_VECTORIZED`
+in `update()` (disabled by default) as a reference for why the simpler three-iteration
+loop won out.
+
 Rendering was the next bottleneck: drawing each boid individually (one `DrawRectangle`/
 `DrawPixel` call per boid) was CPU-bound on draw-call overhead, not GPU work, and had
 grown larger than the vectorized update itself. It's replaced with a single GPU-instanced
