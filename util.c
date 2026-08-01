@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdalign.h>
 
 #define KB(x) ((x) * 1024LLU)
 #define MB(x) ((KB(x)) * 1024LLU)
@@ -30,6 +31,7 @@ typedef struct {
     void * ptr;
     size_t size;
     size_t used;
+    size_t commited;
 } Arena;
 
 void reserve_init(Reserve * reserve, size_t size) {
@@ -65,6 +67,7 @@ void reserve_alloc_subarena(Reserve * reserve, Arena * arena, size_t size){
     arena->ptr = (char *) reserve->ptr + aligned_used;
     arena->size = aligned_size;
     arena->used = 0;
+    arena->commited = 0;
 
     reserve->used = aligned_used + aligned_size;
     return;
@@ -73,6 +76,7 @@ void reserve_alloc_subarena(Reserve * reserve, Arena * arena, size_t size){
 void * arena_alloc(Arena * arena, size_t size, size_t alignment){
     if (!arena) exit(1);
 
+    size_t aligned_commited = round_up_to_factor(arena->commited, page_size());
     size_t aligned_used = round_up_to_factor(arena->used, alignment);
     size_t total_needed = (aligned_used - arena->used) + size;
 
@@ -81,18 +85,20 @@ void * arena_alloc(Arena * arena, size_t size, size_t alignment){
         exit(1);
     }
 
-    void * ptr = (char *) arena->ptr  + aligned_used;
-    size_t commit_start = round_up_to_factor(arena->used, page_size());
-    size_t commit_end = round_up_to_factor(aligned_used + size, page_size());
-    size_t to_commit = commit_end - commit_start;
-    if (to_commit > 0){
-        void * commit_ptr = (char *) arena->ptr + commit_start;
-        if (mprotect(commit_ptr, to_commit, PROT_READ | PROT_WRITE) == -1) {
-            perror("mprotect");
-            exit(1);
+    void * ptr = (char *) arena->ptr + aligned_used;
+    if (arena->used + total_needed > aligned_commited) {
+        size_t commit_start = round_up_to_factor(arena->commited, page_size());
+        size_t commit_end = round_up_to_factor(aligned_used + size, page_size());
+        size_t to_commit = commit_end - commit_start;
+        if (to_commit > 0){
+            void * commit_ptr = (char *) arena->ptr + commit_start;
+            if (mprotect(commit_ptr, to_commit, PROT_READ | PROT_WRITE) == -1) {
+                perror("mprotect");
+                exit(1);
+            }
+            arena->commited += to_commit;
         }
-    }
-
+    } 
     arena->used = aligned_used + size;
     
     return ptr;

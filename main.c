@@ -1,3 +1,4 @@
+#include <bits/time.h>
 #include <immintrin.h>
 #include <math.h>
 #include <stdatomic.h>
@@ -6,13 +7,28 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <assert.h>
-#include <stdalign.h>
+
+#include <time.h>
+#include <unistd.h>
+
+// WTH C library: why does this not exist ?? 
+void timespec_delta(const struct timespec * start, const struct timespec * end, struct timespec * out_delta) {
+    out_delta->tv_nsec = end->tv_nsec - start->tv_nsec;
+    out_delta->tv_sec = end->tv_sec - start->tv_sec;
+
+    if (out_delta->tv_nsec < 0){
+        out_delta->tv_nsec += 1000000000L;
+        out_delta->tv_sec  -= 1;
+    }
+}
 
 #include <raylib.h>
 #include <rlgl.h>
 #include <raymath.h>
+#include <string.h>
 
 #include "util.c"
+
 
 typedef struct {
     atomic_int count;
@@ -47,8 +63,16 @@ void barrier_lane(Barrier * barrier) {
 }
 
 typedef struct {
+    double ms_update_duration;
+    double ms_avg_neignbour_calcualtion;
+} ThreadPerformance ;
+
+typedef struct {
     Barrier barrier;
+
     size_t thread_count;
+    ThreadPerformance * thread_performance;
+
     void * app;
 }LaneGroup ;
 
@@ -67,6 +91,7 @@ __thread LaneCtx ctx;
 #define THREAD_ARENA_PTR() (ctx.arena)
 #define LANE_COUNT() (ctx.group->thread_count)
 #define LANE_ID() (ctx.lane_id)
+#define LANE_PERFORMANCE() (&(ctx.group->thread_performance[LANE_ID()]))
 #define LANE_BARRIER() (barrier_lane(&ctx.group->barrier))
 
 void lane_range(size_t start, size_t end, size_t * out_thread_start, size_t * out_thread_end){
@@ -161,7 +186,7 @@ typedef struct {
 
 void init_window() {
     InitWindow(1600, 900, "para boid");
-    SetTargetFPS(144);
+    SetRandomSeed(100);
 
     for (int i = 0 ; i < MAX_BOID_COUNT; i++){
 
@@ -326,7 +351,7 @@ static inline float hsum256_ps(__m256 v) {
     return _mm_cvtss_f32(lo); // return the first value 
 }
 
-NeighbourAcc simd_acculumate_neighbours(Vector2 self_pos, int self_idx, int start, int end) {
+NeighbourAcc simd_acculumate_neighbours(Vector2 self_pos, int self_idx, int start, int end, float * x, float * y, float * vx, float * vy) {
     NeighbourAcc result = {};
 
     __m256 self_x = _mm256_set1_ps(self_pos.x);
@@ -343,10 +368,10 @@ NeighbourAcc simd_acculumate_neighbours(Vector2 self_pos, int self_idx, int star
     int j = start;
 
     for(; j + 8 <= end ; j+=8){
-        __m256 ox = _mm256_loadu_ps(&BOID_SOA().x[j]);
-        __m256 oy = _mm256_loadu_ps(&BOID_SOA().y[j]);
-        __m256 ovx = _mm256_loadu_ps(&BOID_SOA().vx[j]);
-        __m256 ovy = _mm256_loadu_ps(&BOID_SOA().vy[j]);
+        __m256 ox = _mm256_loadu_ps(&x[j]);
+        __m256 oy = _mm256_loadu_ps(&y[j]);
+        __m256 ovx = _mm256_loadu_ps(&vx[j]);
+        __m256 ovy = _mm256_loadu_ps(&vy[j]);
 
         __m256 j_idx = _mm256_add_ps(_mm256_set1_ps((float) j), lane_offsets);
         __m256 not_self = _mm256_cmp_ps(j_idx, self_idx8, _CMP_NEQ_OQ);
@@ -406,12 +431,17 @@ NeighbourAcc simd_acculumate_neighbours(Vector2 self_pos, int self_idx, int star
     return result;
 }
 
-void update(float delta_time, App * app){
+void update(float dt, App * app){
+
+    ThreadPerformance * perf = LANE_PERFORMANCE();
+    struct timespec start_time = {}, end_time = {}, avg_neighbour_calc_time = {};
+
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+
     size_t thread_start = 0;
     size_t thread_end = 0;
 
     lane_range(0, APP()->boid_count, &thread_start, &thread_end);
-    arena_reset(THREAD_ARENA_PTR());
 
     for(size_t i = thread_start; i < thread_end ; i++){
         
@@ -426,20 +456,87 @@ void update(float delta_time, App * app){
         Vector2 cohesion_sum = {};
 
         int neighbours = 0;
+        
+        struct timespec start_time , end_time = {};
 
-        for (int dy = -1 ; dy <= 1; dy++){
+        clock_gettime(CLOCK_MONOTONIC, &start_time);
+        {
+// performance showed that simpler passing around has better perforamnce
+// #define ARENA_VECTORIZED 
+#ifndef ARENA_VECTORIZED 
 
-            int start = offset(&APP()->grid_soa, (y + dy) * GRID_W + x - 1);
-            int end = offset(&APP()->grid_soa, (y + dy) * GRID_W + x + 2);
+            for (int dy = -1 ; dy <= 1; dy++){
 
-            NeighbourAcc this_cell= simd_acculumate_neighbours(self_pos, i, start, end);
-            
+                int start = offset(&APP()->grid_soa, (y + dy) * GRID_W + x - 1);
+                int end = offset(&APP()->grid_soa, (y + dy) * GRID_W + x + 2);
+
+                NeighbourAcc this_cell= simd_acculumate_neighbours(self_pos, i, start, end,
+                        BOID_SOA().x,
+                        BOID_SOA().y,
+                        BOID_SOA().vx,
+                        BOID_SOA().vy
+                        );
+
+                separation = Vector2Add(separation, this_cell.separation);
+                align_sum = Vector2Add(align_sum, this_cell.align_sum);
+                cohesion_sum = Vector2Add(cohesion_sum, this_cell.cohesion_sum);
+                neighbours += this_cell.neighbours;
+
+            }
+#else
+            int boid_list_size = 0;
+            for (int dy = -1 ; dy <= 1; dy++){
+                int start = offset(&APP()->grid_soa, (y + dy) * GRID_W + x - 1);
+                int end = offset(&APP()->grid_soa, (y + dy) * GRID_W + x + 2);
+                boid_list_size += end - start;
+            }
+
+
+            // create space for entire grid
+            arena_reset(THREAD_ARENA_PTR());
+            float * xarr = ARENA_PUSH_TYPE_ARRAY(THREAD_ARENA_PTR(), float, boid_list_size);
+            float * yarr = ARENA_PUSH_TYPE_ARRAY(THREAD_ARENA_PTR(), float, boid_list_size);
+            float * vxarr = ARENA_PUSH_TYPE_ARRAY(THREAD_ARENA_PTR(), float, boid_list_size);
+            float * vyarr = ARENA_PUSH_TYPE_ARRAY(THREAD_ARENA_PTR(), float, boid_list_size);
+
+            // now we populate stuff 
+
+            size_t memoffset = 0;
+            int self_idx_in_arrs = -1;
+            for (int dy = -1 ; dy <= 1; dy++){
+
+                int start = offset(&APP()->grid_soa, (y + dy) * GRID_W + x - 1);
+                int end = offset(&APP()->grid_soa, (y + dy) * GRID_W + x + 2);
+
+                memcpy(xarr + memoffset, BOID_SOA().x + start, sizeof(float) * (end - start));
+                memcpy(yarr + memoffset, BOID_SOA().y + start, sizeof(float) * (end - start));
+                memcpy(vxarr + memoffset, BOID_SOA().vx + start, sizeof(float) * (end - start));
+                memcpy(vyarr + memoffset, BOID_SOA().vy + start, sizeof(float) * (end - start));
+
+                memoffset += end - start;
+
+                if (start <= i && end > i) {
+                    self_idx_in_arrs = memoffset + (i - start);
+                }
+            }
+
+            NeighbourAcc this_cell= simd_acculumate_neighbours(
+                    self_pos, self_idx_in_arrs, 0, boid_list_size, 
+                    xarr, yarr, vxarr, vyarr);
+
             separation = Vector2Add(separation, this_cell.separation);
             align_sum = Vector2Add(align_sum, this_cell.align_sum);
             cohesion_sum = Vector2Add(cohesion_sum, this_cell.cohesion_sum);
             neighbours += this_cell.neighbours;
-            
+#endif
+#undef ARENA_VECTORIZED
         }
+        clock_gettime(CLOCK_MONOTONIC, &end_time);
+        struct timespec delta = {};
+        timespec_delta(&start_time, &end_time, &delta);
+        avg_neighbour_calc_time.tv_nsec  += delta.tv_nsec;
+        avg_neighbour_calc_time.tv_sec  += delta.tv_sec;
+
 
         Vector2 accel = {0};
         if (neighbours > 0){
@@ -454,9 +551,9 @@ void update(float delta_time, App * app){
 
 #define NOISE_STRENGTH 0.3f
 
-        Vector2 vel = Vector2Add(self_vel, Vector2Scale(accel, delta_time));
+        Vector2 vel = Vector2Add(self_vel, Vector2Scale(accel, dt));
         vel = Vector2ClampValue(vel, MIN_SPEED, MAX_SPEED);
-        Vector2 pos = Vector2Add(self_pos, Vector2Scale(vel, delta_time));
+        Vector2 pos = Vector2Add(self_pos, Vector2Scale(vel, dt));
 
         if (pos.x < 0.0f) {
             pos.x += WORLD_WIDTH;
@@ -478,6 +575,16 @@ void update(float delta_time, App * app){
         NEXT_BOID_SOA().vx[i] = self_vel.x;
         NEXT_BOID_SOA().vy[i] = self_vel.y;
     }
+    
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    struct timespec delta = {};
+    timespec_delta(&start_time, &end_time, &delta);
+    perf->ms_update_duration = (double) delta.tv_sec * (double)1000 + (double) delta.tv_nsec / (double)1000000.0;
+    perf->ms_avg_neignbour_calcualtion = 
+        ((double) avg_neighbour_calc_time.tv_sec * (double)1000 + 
+         (double) avg_neighbour_calc_time.tv_nsec / (double)1000000.0) / 
+        (double) (thread_end - thread_start);
+
 
     LANE_BARRIER();
 
@@ -516,25 +623,49 @@ int thread_main() {
             double render_stop_time = GetTime();
             render_time = render_stop_time - render_start_time;
 
-
             double build_start_time = GetTime();
             build_grid_soa(&APP()->grid_soa);
             double build_stop_time = GetTime();
             build_time = build_stop_time - build_start_time;
 
+            
             DrawRectangle(0, 0, 300, 500,  (Color){255, 255, 255, 180});
+            float yoffset = 10;
+
+            int font_size = 10, y_increment = 15;
+                
+            unsigned int thread_count = LANE_COUNT(); // I don't  like the name thing which is happening here 
+            double thread_update_avg = 0.0f;
+            LaneGroup * grp = ctx.group;
+            for (int i = 0 ; i < LANE_COUNT(); i++){
+
+                thread_update_avg += grp->thread_performance[i].ms_update_duration;
+
+                snprintf(buffer, 1024, "thread %d update time : %f", i, grp->thread_performance[i].ms_update_duration);
+                DrawText(buffer, 10, yoffset, font_size, BLUE);
+                yoffset += y_increment;
+
+                snprintf(buffer, 1024, "thread %d avg update time : %f", i, grp->thread_performance[i].ms_avg_neignbour_calcualtion);
+                DrawText(buffer, 10, yoffset, font_size, BLUE);
+                yoffset += y_increment;
+            }
+
 
             snprintf(buffer, 1024, "FPS: %d", GetFPS());
-            DrawText(buffer, 10, 10, 20, BLUE);
+            DrawText(buffer, 10, yoffset, font_size, BLUE);
+            yoffset += y_increment;
 
             snprintf(buffer, 1024,  "Render: %lf ms", render_time * 1000.0);
-            DrawText(buffer, 10, 35, 20, BLUE);
-            
-            snprintf(buffer, 1024,  "Build : %lf ms", build_time * 1000.0);
-            DrawText(buffer, 10, 60, 20, BLUE);
+            DrawText(buffer, 10, yoffset, font_size, BLUE);
+            yoffset += y_increment;
 
-            snprintf(buffer, 1024,  "Update : %lf ms", update_time * 1000.0);
-            DrawText(buffer, 10, 85, 20, BLUE);
+            snprintf(buffer, 1024,  "Build : %lf ms", build_time * 1000.0);
+            DrawText(buffer, 10, yoffset, font_size, BLUE);
+            yoffset += y_increment;
+
+            snprintf(buffer, 1024,  "Update : %lf ms", thread_update_avg / LANE_COUNT());
+            DrawText(buffer, 10, yoffset, font_size, BLUE);
+            yoffset += y_increment;
 
             EndDrawing();
 
@@ -578,9 +709,12 @@ int main(){
         reserve_alloc_subarena(&reserve, &thread_arenas[i], MB(200));
     }
 
+    ThreadPerformance thread_perforamnce[THREAD_COUNT] = {};
+
     LaneGroup lane_group =  {};
     lane_group.thread_count = THREAD_COUNT;
     lane_group.app = &app;
+    lane_group.thread_performance = &thread_perforamnce;
     barrier_init(&lane_group.barrier, THREAD_COUNT);
 
     pthread_t other_threads[THREAD_COUNT - 1];
