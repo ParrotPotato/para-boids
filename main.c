@@ -125,7 +125,7 @@ typedef struct {
 } Boid ; 
 
 #define WORLD_WIDTH  1600
-#define WORLD_HEIGHT 900
+#define WORLD_HEIGHT 1200
 #define WORLD_DEPTH  1200
 
 #define NEIGHBOUR_RADIUS  30.0f
@@ -630,7 +630,29 @@ void update(float dt, App * app){
         avg_neighbour_calc_time.tv_sec  += delta.tv_sec;
 
 
-        Vector3 accel = {0};
+        const float OBSTACLE_AVOIDANCE = 500.0f;
+        const float OBSTACLE_THRESHOLD = 200.0f;
+        Vector3 obstacle = {};
+
+        if (fabsf(self_pos.x) < OBSTACLE_THRESHOLD){
+            obstacle.x = OBSTACLE_AVOIDANCE;
+        } else if (fabsf(self_pos.x - WORLD_WIDTH) < OBSTACLE_THRESHOLD) {
+            obstacle.x = -OBSTACLE_AVOIDANCE;
+        }
+        
+        if (fabsf(self_pos.y) < OBSTACLE_THRESHOLD){
+            obstacle.y = OBSTACLE_AVOIDANCE;
+        } else if (fabsf(self_pos.y - WORLD_HEIGHT) < OBSTACLE_THRESHOLD) {
+            obstacle.y = -OBSTACLE_AVOIDANCE;
+        }
+
+        if (fabsf(self_pos.z) < OBSTACLE_THRESHOLD){
+            obstacle.z = OBSTACLE_AVOIDANCE;
+        } else if (fabsf(self_pos.z - WORLD_DEPTH) < OBSTACLE_THRESHOLD) {
+            obstacle.z = -OBSTACLE_AVOIDANCE;
+        }
+
+        Vector3 accel = obstacle;
         if (neighbours > 0){
             Vector3 avg_vel = Vector3Scale(align_sum, 1.0f / neighbours);
             Vector3 center  = Vector3Scale(cohesion_sum, 1.0f / neighbours);
